@@ -134,7 +134,7 @@ static inline int free_base_req(uint64_t *num_inflight_reqs,
 				bool dec_inflight_reqs);
 
 static inline int check_post_rx_buff_req(nccl_net_ofi_rdma_req_t *rx_buff_req);
-
+int test_drain_cq(nccl_net_ofi_plugin_t *plugin);
 
 static nccl_net_ofi_rdma_domain_t *rdma_endpoint_get_domain(nccl_net_ofi_rdma_ep_t *ep)
 {
@@ -2012,11 +2012,15 @@ static ssize_t ofi_process_cq_rail(nccl_net_ofi_rdma_ep_t *ep, nccl_net_ofi_ep_r
 	ssize_t rc = 0;
 	ssize_t count = 0;
 	int ret = 0;
-
+	nccl_net_ofi_rdma_domain_t *domain = rdma_endpoint_get_domain(ep);
+	domain->fi_cq_read_duration->start_timer();
 	/* Receive completions for the given endpoint */
 	rc = fi_cq_read(rail->cq, cqe_buffers, cq_read_count);
+	domain->fi_cq_read_duration->stop_timer();
 	if (rc > 0) {
+		domain->rdma_process_completions_duration->start_timer();
 		ret = rdma_process_completions(cqe_buffers, rc, rdma_endpoint_get_device(ep), rail->rail_id);
+		domain->rdma_process_completions_duration->stop_timer();
 		if (OFI_UNLIKELY(ret != 0)) {
 			return static_cast<ssize_t>(ret);
 		}
@@ -2089,13 +2093,14 @@ static ssize_t ofi_process_cq(nccl_net_ofi_rdma_ep_t *ep, func done_check)
 
 	time = domain->cq_duration->stop_timer();
 	if (time > 250) {
-		NCCL_OFI_WARN("Long poll (cq): %lu %ld", time, total_count);
+	//	NCCL_OFI_WARN("Long poll (cq): %lu %ld", time, total_count);
 	}
 
 	domain->cq_count->insert(total_count);
-
+	domain->process_pending_reqs_duration->start_timer();
 	/* Process any pending requests */
 	ret = process_pending_reqs(ep);
+	domain->process_pending_reqs_duration->stop_timer();
 	if (OFI_UNLIKELY(ret != 0 && ret != -FI_EAGAIN)) {
 		NCCL_OFI_WARN("Failed call to process_pending_reqs: %d", ret);
 		return ret;
@@ -2743,6 +2748,26 @@ static int finish_connect(nccl_net_ofi_rdma_send_comm_t *s_comm)
 
 #define __compiler_barrier() do { asm volatile ("" : : : "memory"); } while(0)
 
+int test_drain_cq(nccl_net_ofi_plugin_t *plugin)
+{
+	int ret = 0;
+
+	for (size_t i = 0 ; i < plugin->p_num_devs ; i++) {
+        nccl_net_ofi_device_t *device = plugin->p_devs[i];
+        for (auto domain_iter = device->domain_table->begin();
+            domain_iter != device->domain_table->end();) {
+            nccl_net_ofi_rdma_domain_t *domain = (nccl_net_ofi_rdma_domain_t *)domain_iter->second;
+            ret = ofi_process_cq((nccl_net_ofi_rdma_ep_t *)domain->base.endpoint);
+            if (OFI_UNLIKELY(ret < 0)) {
+                goto exit;
+            }
+            ++domain_iter;
+        }
+	}
+
+	exit:
+	return ret;
+}
 static int test(nccl_net_ofi_req_t *base_req, int *done, int *size)
 {
 	int ret = 0;
@@ -2762,18 +2787,9 @@ static int test(nccl_net_ofi_req_t *base_req, int *done, int *size)
 	nccl_net_ofi_rdma_ep_t *ep = (nccl_net_ofi_rdma_ep_t *)base_comm->ep;
 	assert(ep != NULL);
 
-	/* Process more completions until the current request is completed */
-	if (req->state != NCCL_OFI_RDMA_REQ_COMPLETED &&
-	    req->state != NCCL_OFI_RDMA_REQ_ERROR) {
-		ret = ofi_process_cq(ep,
-				     [&req]() -> bool {
-					     return (req->state == NCCL_OFI_RDMA_REQ_COMPLETED);
-				     });
-		if (OFI_UNLIKELY(ret < 0)) {
-			goto exit;
-		}
-		ret = 0;
-	}
+	nccl_net_ofi_rdma_domain_t *domain = rdma_endpoint_get_domain(ep);
+	domain->test_duration->start_timer();
+
 
 	/* Determine whether the request has finished without error and free if done */
 	if (OFI_LIKELY(req->state == NCCL_OFI_RDMA_REQ_COMPLETED)) {
@@ -2804,7 +2820,9 @@ static int test(nccl_net_ofi_req_t *base_req, int *done, int *size)
 			}
 
 			nccl_ofi_msgbuff_status_t stat;
+			domain->nccl_ofi_msgbuff_complete_duration->start_timer();
 			nccl_ofi_msgbuff_result_t mb_res = nccl_ofi_msgbuff_complete(msgbuff, req->msg_seq_num, &stat);
+			domain->nccl_ofi_msgbuff_complete_duration->stop_timer();
 			if (OFI_UNLIKELY(mb_res != NCCL_OFI_MSGBUFF_SUCCESS)) {
 				NCCL_OFI_WARN("Invalid result of msgbuff_complete for msg %hu", req->msg_seq_num);
 				ret = -EINVAL;
@@ -2826,6 +2844,7 @@ static int test(nccl_net_ofi_req_t *base_req, int *done, int *size)
 	}
 
  exit:
+    domain->test_duration->stop_timer();
 	return ret;
 }
 
@@ -3593,7 +3612,7 @@ static int recv(nccl_net_ofi_recv_comm_t *recv_comm, int n, void **buffers,
 
 	domain = rdma_endpoint_get_domain(ep);
 	assert(domain != NULL);
-
+    domain->recv_duration->start_timer();
 	device = rdma_endpoint_get_device(ep);
 	assert(device != NULL);
 
@@ -3678,6 +3697,7 @@ static int recv(nccl_net_ofi_recv_comm_t *recv_comm, int n, void **buffers,
 			ret = check_post_rx_buff_req(rx_buff_req);
 			if (ret != 0) {
 				NCCL_OFI_WARN("Failed call to check_post_rx_buff_req");
+				domain->recv_duration->stop_timer();
 				return ret;
 			}
 			recv_data->eager_copy_req = NULL;
@@ -3740,6 +3760,9 @@ static int recv(nccl_net_ofi_recv_comm_t *recv_comm, int n, void **buffers,
 		req->free(req, false);
 	*base_req = NULL;
  exit:
+    if (domain) {
+	    domain->recv_duration->stop_timer();
+    }
 	return ret;
 }
 
@@ -5920,7 +5943,9 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, int size, int t
 	ep = (nccl_net_ofi_rdma_ep_t *)s_comm->base.base.ep;
 	assert(ep != NULL);
 
+
 	domain = rdma_endpoint_get_domain(ep);
+	domain->send_duration->start_timer();
 	assert(domain != NULL);
 
 	ret = process_cq_if_pending(ep);
@@ -5977,6 +6002,7 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, int size, int t
 			 * as soon as we receive the RDMA control message.
 			 */
 			have_ctrl = false;
+			break;
 		} else {
 			NCCL_OFI_WARN("Message %hu has invalid status. res = %d and stat = %d",
 				      msg_seq_num, mb_res, msg_stat);
@@ -5993,31 +6019,32 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, int size, int t
 		   cause us to progress the pending queue each iteration, which
 		   is a bunch of repetitive work.  So instead, we do this until
 		   we can clean up more. */
-		if (!have_ctrl) {
-			ssize_t loop_count = 0;
+		// if (!have_ctrl) {
+		// 	ssize_t loop_count = 0;
 
-			for (uint16_t rail_id = 0; rail_id != ep->num_control_rails; ++rail_id) {
-				nccl_net_ofi_ep_rail_t *rail = rdma_endpoint_get_control_rail(ep, rail_id);
+		// 	for (uint16_t rail_id = 0; rail_id != ep->num_control_rails; ++rail_id) {
+		// 		nccl_net_ofi_ep_rail_t *rail = rdma_endpoint_get_control_rail(ep, rail_id);
 
-				ssize_t count = ofi_process_cq_rail(ep, rail);
-				if (OFI_UNLIKELY(count < 0)) {
-					goto error;
-				}
+		// 		ssize_t count = ofi_process_cq_rail(ep, rail);
+		// 		if (OFI_UNLIKELY(count < 0)) {
+		// 			goto error;
+		// 		}
 
-				loop_count += count;
-			}
+		// 		loop_count += count;
+		// 	}
 
-			if (loop_count == 0) {
-				/* if we didn't find any events in the
-				 * completion queue, then time stop stop giving
-				 * up on getting the control message. */
-				break;
-			}
-		}
+		// 	if (loop_count == 0) {
+		// 		/* if we didn't find any events in the
+		// 		 * completion queue, then time stop stop giving
+		// 		 * up on getting the control message. */
+		// 		break;
+		// 	}
+		// }
 	} while (have_ctrl == false);
 
 	if (!have_ctrl) {
 		*base_req = NULL;
+		domain->send_duration->stop_timer();
 		return ncclSuccess;
 	}
 
@@ -6044,8 +6071,10 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, int size, int t
 		eager = true;
 	}
 
+	domain->send_alloc_duration->start_timer();
 	ret = alloc_rdma_send_req(s_comm, msg_seq_num, data,
 				  size, mr_handle, eager, &req);
+	domain->send_alloc_duration->stop_timer();
 	if (OFI_UNLIKELY(ret != 0)) {
 		goto error;
 	}
@@ -6056,20 +6085,27 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, int size, int t
 		 * the RDMA write metadata from the rx buffer
 		 */
 		nccl_net_ofi_rdma_req_t *rx_buff_req = (nccl_net_ofi_rdma_req_t *)elem;
+		domain->update_send_data_duration->start_timer();
 		ret = update_send_data_from_remote(s_comm, rx_buff_req, req);
+		domain->update_send_data_duration->stop_timer();
+
 		if (OFI_UNLIKELY(ret != 0)) {
 			NCCL_OFI_WARN("Failed to copy ctrl data");
 			goto error;
 		}
 
 		/* Post if needed */
+		domain->check_post_rx_buff_req_duration->start_timer();
 		ret = check_post_rx_buff_req(rx_buff_req);
+		domain->check_post_rx_buff_req_duration->stop_timer();
 		if (OFI_UNLIKELY(ret != 0)) {
 			goto error;
 		}
 	}
 
+	domain->insert_rdma_duration->start_timer();
 	ret = insert_rdma_send_req_into_msgbuff(s_comm, dev_id, have_ctrl, &req);
+	domain->insert_rdma_duration->stop_timer();
 	if (OFI_UNLIKELY(ret != 0 || req == NULL)) {
 		goto free_req;
 	}
@@ -6088,8 +6124,9 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, int size, int t
 
 	/* Try posting RDMA write for received RDMA control messages */
 	if (have_ctrl || eager) {
-
+		domain->send_progress_duration->start_timer();
 		ret = send_progress(req);
+		domain->send_progress_duration->stop_timer();
 		if (ret == -FI_EAGAIN) {
 			/* Add to pending reqs queue */
 			nccl_net_ofi_mutex_lock(&ep->pending_reqs_lock);
@@ -6117,6 +6154,9 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, int size, int t
 		req->free(req, false);
 	*base_req = NULL;
  exit:
+    if (domain) {
+	    domain->send_duration->stop_timer();
+    }
 	return ret;
 }
 
@@ -7437,11 +7477,31 @@ nccl_net_ofi_rdma_domain_free(nccl_net_ofi_domain_t *base_domain)
 	int ret;
 	nccl_net_ofi_rdma_domain_t *domain = (nccl_net_ofi_rdma_domain_t *)base_domain;
 
+	domain->test_duration->print_stats();
+	domain->send_duration->print_stats();
+	domain->send_alloc_duration->print_stats();
+	domain->send_progress_duration->print_stats();
+	domain->insert_rdma_duration->print_stats();
+	domain->update_send_data_duration->print_stats();
+	domain->check_post_rx_buff_req_duration->print_stats();
+	domain->recv_duration->print_stats();
 	domain->cq_duration->print_stats();
 	domain->cq_count->print_stats();
+	domain->nccl_ofi_msgbuff_complete_duration->print_stats();
+	domain->rdma_process_completions_duration->print_stats();
+    domain->process_pending_reqs_duration->print_stats();
+    domain->fi_cq_read_duration->print_stats();
 
 	delete domain->cq_duration;
 	delete domain->cq_count;
+
+	delete domain->test_duration;
+	delete domain->send_duration;
+	delete domain->recv_duration;
+	delete domain->nccl_ofi_msgbuff_complete_duration;
+	delete domain->rdma_process_completions_duration;
+	delete domain->process_pending_reqs_duration;
+	delete domain->fi_cq_read_duration;
 
 	ret = dealloc_and_dereg_flush_buff(domain);
 	if (ret != 0) {
@@ -7481,7 +7541,8 @@ static nccl_net_ofi_domain_t *nccl_net_ofi_rdma_device_create_domain(nccl_net_of
 	int ret = 0;
 	nccl_net_ofi_rdma_domain_t *domain = NULL;
 	nccl_net_ofi_rdma_device_t *device = NULL;
-
+	static std::vector<size_t> bins = {0, 10, 256, 512, 768, 1024, 1280, 2048, 3072, 4096, 8152, 16384, 32768, 65536};
+	static std::vector<size_t> cq_bins = {0, 2, 4, 8, 16, 32, 64, 128}; 
 	device = (nccl_net_ofi_rdma_device_t *)base_dev;
 	if (OFI_UNLIKELY(device == NULL)) {
 		NCCL_OFI_WARN("Invalid device provided");
@@ -7558,17 +7619,89 @@ static nccl_net_ofi_domain_t *nccl_net_ofi_rdma_device_create_domain(nccl_net_of
 		goto error;
 	}
 
-	domain->cq_duration = new timer_histogram<histogram_linear_binner<size_t> >("CQ Polling Duration", histogram_linear_binner<size_t>(0, 50, 10));
+	domain->cq_duration = new timer_histogram<histogram_custom_binner<size_t> >("ofi_process_cq() Duration", histogram_custom_binner<size_t>(bins));
 	if (domain->cq_duration == NULL) {
 		ret = -ENOMEM;
 		goto error;
 	}
 
-	domain->cq_count= new histogram<size_t, histogram_linear_binner<size_t> >(std::string("CQ count (device ") + std::to_string(base_dev->dev_id), histogram_linear_binner<size_t>(0, 8, 10));
+	domain->cq_count= new histogram<size_t, histogram_custom_binner<size_t> >("cq_count() Duration", histogram_custom_binner<size_t>(cq_bins));
 	if (domain->cq_count == NULL) {
 		ret = -ENOMEM;
 		goto error;
 	}
+
+	domain->test_duration = new timer_histogram<histogram_custom_binner<size_t> >("plugin_test() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->test_duration == NULL) {
+		ret = -ENOMEM;
+        goto error;
+    }
+
+	domain->send_duration = new timer_histogram<histogram_custom_binner<size_t> >("plugin_send() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->send_duration == NULL) {
+		ret = -ENOMEM;
+        goto error;
+    }
+
+	domain->send_alloc_duration = new timer_histogram<histogram_custom_binner<size_t> >("send_alloc() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->send_alloc_duration == NULL) {
+		ret = -ENOMEM;
+        goto error;
+    }
+
+	domain->send_progress_duration = new timer_histogram<histogram_custom_binner<size_t> >("send_progress() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->send_progress_duration == NULL) {
+		ret = -ENOMEM;
+        goto error;
+    } 
+
+	domain->insert_rdma_duration = new timer_histogram<histogram_custom_binner<size_t> >("insert_rdma_duration() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->insert_rdma_duration == NULL) {
+		ret = -ENOMEM;
+        goto error;
+    } 
+
+	domain->check_post_rx_buff_req_duration = new timer_histogram<histogram_custom_binner<size_t> >("check_post_rx_buff_req() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->check_post_rx_buff_req_duration == NULL) {
+		ret = -ENOMEM;
+        goto error;
+    } 
+
+	domain->update_send_data_duration = new timer_histogram<histogram_custom_binner<size_t> >("update_send_data_duration() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->update_send_data_duration == NULL) {
+		ret = -ENOMEM;
+        goto error;
+    } 
+
+	domain->recv_duration = new timer_histogram<histogram_custom_binner<size_t> >("plugin_recv() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->recv_duration == NULL) {
+		ret = -ENOMEM;
+        goto error;
+    }
+
+	domain->nccl_ofi_msgbuff_complete_duration = new timer_histogram<histogram_custom_binner<size_t> >("nccl_ofi_msgbuff_complete() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->nccl_ofi_msgbuff_complete_duration == NULL) {
+        ret = -ENOMEM;
+        goto error;
+    }
+
+	domain->rdma_process_completions_duration = new timer_histogram<histogram_custom_binner<size_t> >("rdma_process_completions() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->rdma_process_completions_duration == NULL) {
+        ret = -ENOMEM;
+        goto error;
+    }
+
+	domain->fi_cq_read_duration = new timer_histogram<histogram_custom_binner<size_t> >("fi_cq_read() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->fi_cq_read_duration == NULL) {
+        ret = -ENOMEM;
+        goto error;
+    }
+
+	domain->process_pending_reqs_duration = new timer_histogram<histogram_custom_binner<size_t> >("process_pending_reqs() Duration", histogram_custom_binner<size_t>(bins));
+    if (domain->process_pending_reqs_duration == NULL) {
+        ret = -ENOMEM;
+        goto error;
+    }
 
 error:
 	if (ret != 0) {

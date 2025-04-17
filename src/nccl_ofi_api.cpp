@@ -25,6 +25,7 @@ bool abort_on_error = false;
 nccl_net_ofi_plugin_t *plugin = NULL;
 nccl_ofi_logger_t ofi_log_function = NULL;
 
+extern int test_drain_cq(nccl_net_ofi_plugin_t *plugin);
 
 static ncclResult_t nccl_net_ofi_retval_translate_impl(int retval)
 {
@@ -806,9 +807,14 @@ ncclResult_t nccl_net_ofi_irecv_v9(void* recvComm, int n, void** data,
 ncclResult_t nccl_net_ofi_test(void* req, int* done, int* size)
 {
 	/* Validate request */
-	if (OFI_UNLIKELY(req == NULL)) {
-		return check_return(ncclInternalError);
-	}
+	//if (OFI_UNLIKELY(req == NULL)) {
+	//	return check_return(ncclInternalError);
+	//}
+
+    if (req == NULL && done == NULL && size == NULL) {
+        test_drain_cq(plugin);
+        return ncclSuccess;
+    }
 
 	nccl_net_ofi_req_t *base_req = (nccl_net_ofi_req_t *)req;
 	int ret = base_req->test(base_req, done, size);

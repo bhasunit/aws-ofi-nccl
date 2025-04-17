@@ -29,12 +29,17 @@ class histogram {
 public:
 	histogram(const std::string& description_arg, Binner binner_arg)
 		: description(description_arg), binner(binner_arg),
-		bins(binner.get_num_bins()), num_samples(0), first_insert(true)
+		bins(binner.get_num_bins()), num_samples(0), first_insert(true), warmup_samples(5000)
 	{
 	}
 
 	void insert(const T& input_val)
 	{
+		num_samples++;
+		if (num_samples < warmup_samples) {
+			return;
+		}
+
 		if (OFI_UNLIKELY(first_insert)) {
 			max_val = min_val = input_val;
 			first_insert = false;
@@ -47,14 +52,13 @@ public:
 		}
 
 		bins[binner.get_bin(input_val)]++;
-		num_samples++;
 	}
 
 	void print_stats(void) {
 		auto range_labels = binner.get_bin_ranges();
 
-		NCCL_OFI_INFO(NCCL_NET, "histogram %s", description.c_str());
-		NCCL_OFI_INFO(NCCL_NET, "  min: %ld, max: %ld, num_samples: %lu",
+		NCCL_OFI_INFO(NCCL_INIT, "histogram %s", description.c_str());
+		NCCL_OFI_INFO(NCCL_INIT, "%s min: %ld, max: %ld, num_samples: %lu", description.c_str(),
 					(long int)min_val, (long int)max_val, num_samples);
 		for (size_t i = 0 ; i < bins.size() ; ++i) {
 			std::stringstream ss;
@@ -65,7 +69,7 @@ public:
 				ss << "    ";
 			}
 			ss  << "    " << bins[i];
-			NCCL_OFI_INFO(NCCL_NET, "%s", ss.str().c_str());
+			NCCL_OFI_INFO(NCCL_INIT, "%s %s", description.c_str(), ss.str().c_str());
 		}
 	}
 
@@ -77,6 +81,7 @@ protected:
 	T min_val;
 	std::size_t num_samples;
 	bool first_insert;
+	std::size_t warmup_samples;
 };
 
 
@@ -109,7 +114,7 @@ public:
 	{
 		asm volatile ("" : : : "memory");
 		auto now = clock::now();
-		auto duration = std::chrono::duration_cast<std::chrono::microseconds>(now - start_time);
+		auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(now - start_time);
 		insert(duration.count());
 		return duration.count();
 	}

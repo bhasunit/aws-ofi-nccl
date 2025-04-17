@@ -853,8 +853,21 @@ typedef struct nccl_net_ofi_rdma_domain {
 	/* List of endpoints and set of addresses they have connections to */
 	nccl_ofi_ep_addr_list_t *ep_addr_list;
 
-	timer_histogram<histogram_linear_binner<size_t> > *cq_duration;
-	histogram<size_t, histogram_linear_binner<size_t> > *cq_count;
+	timer_histogram<histogram_custom_binner<size_t> > *cq_duration;
+	histogram<size_t, histogram_custom_binner<size_t> > *cq_count;
+	timer_histogram<histogram_custom_binner<size_t> > *test_duration;
+	timer_histogram<histogram_custom_binner<size_t> > *send_duration;
+	timer_histogram<histogram_custom_binner<size_t> > *send_alloc_duration;
+	timer_histogram<histogram_custom_binner<size_t> > *send_progress_duration;
+	timer_histogram<histogram_custom_binner<size_t> > *insert_rdma_duration;
+	timer_histogram<histogram_custom_binner<size_t> > *update_send_data_duration;
+	timer_histogram<histogram_custom_binner<size_t> > *check_post_rx_buff_req_duration;
+	
+	timer_histogram<histogram_custom_binner<size_t> > *recv_duration;
+	timer_histogram<histogram_custom_binner<size_t> > *nccl_ofi_msgbuff_complete_duration;
+    timer_histogram<histogram_custom_binner<size_t> > *rdma_process_completions_duration;
+    timer_histogram<histogram_custom_binner<size_t> > *fi_cq_read_duration;
+    timer_histogram<histogram_custom_binner<size_t> > *process_pending_reqs_duration;
 } nccl_net_ofi_rdma_domain_t;
 
 
