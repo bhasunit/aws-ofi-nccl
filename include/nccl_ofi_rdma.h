@@ -130,6 +130,23 @@ typedef struct nccl_net_ofi_rdma_mr_handle {
 	struct fid_mr **mr;
 } nccl_net_ofi_rdma_mr_handle_t;
 
+typedef struct nccl_net_ofi_ctrl_fifo {
+    uint64_t id;
+    uint64_t addr;
+    uint64_t size;
+    uint64_t mr_key[MAX_NUM_RAILS];
+} nccl_net_ofi_ctrl_fifo_t;
+
+typedef struct nccl_net_ofi_remote_fifo {
+
+	/* Local control fifo and mr_handle */
+	nccl_net_ofi_ctrl_fifo_t ctrl_fifo[NCCL_OFI_MAX_REQUESTS];
+    nccl_net_ofi_rdma_mr_handle_t *ctrl_fifo_mr_handle;
+
+	/* Addr and key of remote control fifo*/
+	uint64_t remote_addr;
+	uint64_t remote_mr_key[MAX_NUM_RAILS];
+} nccl_net_ofi_remote_fifo_t;
 
 /* Contents of ctrl message sent from receiver to sender to advertise
    destination buffer */
@@ -275,14 +292,15 @@ typedef struct {
  * @brief	Data of request responsible for sending the control message
  */
 typedef struct {
-	/* Pointer to the allocated control buffer from freelist */
-	nccl_ofi_freelist_elem_t *ctrl_fl_elem;
 	/* Schedule used to transfer the control buffer. We save the
 	 * pointer to reference it when transferring the buffer over
 	 * network. */
 	nccl_net_ofi_schedule_t *ctrl_schedule;
 	/* Pointer to recv parent request */
 	nccl_net_ofi_rdma_req_t *recv_req;
+	/* Index to ctrl fifo */
+	uint16_t ctrl_fifo_id;
+
 #if HAVE_NVTX_TRACING
 	nvtxRangeId_t trace_id;
 #endif
@@ -454,9 +472,14 @@ typedef struct nccl_ofi_rdma_connection_info {
 	 * the number of entries that are in use. */
 	nccl_ofi_rdma_ep_name_t control_ep_names[MAX_NUM_RAILS];
 	nccl_ofi_rdma_ep_name_t ep_names[MAX_NUM_RAILS];
+
+	/* Information regarding ctrl fifo */
+	uint64_t ctrl_fifo;
+	uint64_t ctrl_fifo_mr_key[MAX_NUM_RAILS];
+
 } nccl_ofi_rdma_connection_info_t;
 /* Since this is a message on the wire, check that it has the expected size */
-static_assert(sizeof(nccl_ofi_rdma_connection_info_t) == 528,
+static_assert(sizeof(nccl_ofi_rdma_connection_info_t) == 568,
 			  "Wrong size for RDMA connect message");
 
 /*
@@ -539,6 +562,9 @@ typedef struct nccl_net_ofi_rdma_send_comm {
 	/* Array of `num_control_rails` communicator rails */
 	nccl_net_ofi_rdma_send_comm_rail_t *control_rails;
 
+	/* Array of ctrl_fifo_entries */
+	nccl_net_ofi_ctrl_fifo_t ctrl_fifo[NCCL_OFI_MAX_REQUESTS];
+	nccl_net_ofi_rdma_mr_handle_t *ctrl_fifo_mr_handle;
 } nccl_net_ofi_rdma_send_comm_t;
 
 /*
@@ -595,6 +621,8 @@ typedef struct nccl_net_ofi_rdma_recv_comm {
 	/* Free list to track control buffers, for sending RDMA control messages */
 	nccl_ofi_freelist_t *ctrl_buff_fl;
 
+
+
 #if HAVE_NVTX_TRACING
 	nvtxDomainHandle_t nvtx_domain[NCCL_OFI_N_NVTX_DOMAIN_PER_COMM];
 #endif
@@ -619,6 +647,8 @@ typedef struct nccl_net_ofi_rdma_recv_comm {
 	nccl_net_ofi_rdma_recv_comm_rail_t *rails;
 	/* Array of `num_control_rails` communicator rails */
 	nccl_net_ofi_rdma_recv_comm_rail_t *control_rails;
+
+	nccl_net_ofi_remote_fifo_t remote_fifo;
 } nccl_net_ofi_rdma_recv_comm_t;
 
 typedef struct nccl_net_ofi_rdma_listen_comm {
