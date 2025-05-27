@@ -5963,17 +5963,7 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, size_t size, in
 	 */
 
 	have_ctrl = false;
-	msg_seq_num = s_comm->next_msg_seq_num;
-	slot = msg_seq_num % NCCL_OFI_MAX_REQUESTS;
-
-	if (s_comm->ctrl_fifo[slot].id != ((uint64_t)(msg_seq_num + 1) & MSG_SEQ_NUM_MASK)) {
-        *base_req = NULL;
-        ret = 0;
-        goto error;
-    } 
-    
-	have_ctrl = true;
-
+	
 	/* NCCL versions prior to 2.24 require special handling for 0 byte
 	 * messages when using user buffer registration.  NCCL passes the base
 	 * pointer from the user buffer, but passes the registration from the
@@ -5996,6 +5986,17 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, size_t size, in
 	if (!have_ctrl && (ssize_t)size <= ep->eager_send_size && s_comm->num_inflight_writes == 0) {
 		eager = true;
 	}
+
+	msg_seq_num = s_comm->next_msg_seq_num;
+	slot = msg_seq_num % NCCL_OFI_MAX_REQUESTS;
+
+	if (!eager && s_comm->ctrl_fifo[slot].id != ((uint64_t)(msg_seq_num + 1) & MSG_SEQ_NUM_MASK)) {
+        *base_req = NULL;
+        ret = 0;
+        goto error;
+	}
+
+	have_ctrl = true;
 
 	ret = alloc_rdma_send_req(s_comm, msg_seq_num, data,
 				  size, mr_handle, eager, &req);
@@ -6630,6 +6631,7 @@ static inline int create_send_comm(nccl_net_ofi_conn_handle_t *handle,
 		return -ENOMEM;
 	}
 
+	NCCL_OFI_INFO(NCCL_INIT, "Allocating fifo for send communicator");
 	/* Allocate fifo */
     ret = reg_internal_mr(domain, ret_s_comm->ctrl_fifo, sizeof(nccl_net_ofi_ctrl_fifo) * NCCL_OFI_MAX_REQUESTS,  NCCL_PTR_HOST, &ret_s_comm->ctrl_fifo_mr_handle);
     if (ret != 0) {
