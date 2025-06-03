@@ -134,8 +134,9 @@ typedef struct nccl_net_ofi_ctrl_fifo {
     uint64_t addr;
     uint64_t size;
     uint64_t mr_key[MAX_NUM_RAILS];
+    uint8_t recv_completion;
     uint64_t id;
-    char padding[8];
+    char padding[7];
 } nccl_net_ofi_ctrl_fifo_t;
 
 typedef struct nccl_net_ofi_remote_fifo {
@@ -529,8 +530,6 @@ typedef struct nccl_net_ofi_rdma_send_comm {
 	nccl_ofi_freelist_elem_t *conn_msg;
 
 	uint16_t next_msg_seq_num;
-
-	nccl_ofi_msgbuff_t *msgbuff;
 
 	/* Number of rails */
 	uint16_t num_rails;

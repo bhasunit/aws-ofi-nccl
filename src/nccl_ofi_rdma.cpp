@@ -797,8 +797,8 @@ static inline int set_send_ctrl_completed(nccl_net_ofi_rdma_req_t *req)
 	rdma_req_recv_data_t *recv_data = get_recv_data(recv_req);
 
 	assert(req->comm->type == NCCL_NET_OFI_RECV_COMM);
-	//nccl_net_ofi_rdma_recv_comm_t *r_comm =
-	//	(nccl_net_ofi_rdma_recv_comm_t *)req->comm;
+	nccl_net_ofi_rdma_recv_comm_t *r_comm =
+		(nccl_net_ofi_rdma_recv_comm_t *)req->comm;
 
 	nccl_net_ofi_mutex_lock(&req->req_lock);
 
@@ -808,9 +808,9 @@ static inline int set_send_ctrl_completed(nccl_net_ofi_rdma_req_t *req)
 
 	nccl_net_ofi_mutex_unlock(&req->req_lock);
 
-	//nccl_net_ofi_mutex_lock(&r_comm->ctrl_counter_lock);
-	//r_comm->n_ctrl_delivered += 1;
-	//nccl_net_ofi_mutex_unlock(&r_comm->ctrl_counter_lock);
+	nccl_net_ofi_mutex_lock(&r_comm->ctrl_counter_lock);
+	r_comm->n_ctrl_delivered += 1;
+	nccl_net_ofi_mutex_unlock(&r_comm->ctrl_counter_lock);
 
 	/* Add completion to parent request */
 	return inc_req_completion(recv_req, 0, recv_data->total_num_compls);
@@ -921,8 +921,7 @@ static inline int update_send_data_from_remote(nccl_net_ofi_rdma_send_comm_t *s_
 	send_data->wdata =
 		GET_RDMA_WRITE_IMM_DATA(s_comm->remote_comm_id, req->msg_seq_num, send_data->schedule->num_xfer_infos);
 
-	// TODO
-	//send_data->no_target_completion = (ctrl_msg->type == NCCL_OFI_RDMA_MSG_CTRL_NO_COMPLETION);
+	send_data->no_target_completion = s_comm->ctrl_fifo[slot].recv_completion;
 	return 0;
 }
 
@@ -985,100 +984,6 @@ static inline int decrease_rx_buff_cnt(nccl_net_ofi_rdma_ep_t *ep,
 	nccl_net_ofi_mutex_unlock(&rail->rx_buff_mutex);
 
 	return check_post_rx_buffers_rail(ep, rail);
-}
-
-/**
- * @brief	Handle receiving an RDMA control message. These are control messages
- *       	containing information about the remote buffer location which will be
- *       	used to trigger write operations.
- */
-static inline int handle_ctrl_recv(nccl_net_ofi_rdma_send_comm_t *s_comm,
-					    uint16_t msg_seq_num,
-					    nccl_net_ofi_rdma_req_t *rx_buff_req)
-{
-	int ret;
-
-	nccl_ofi_msgbuff_status_t stat;
-	nccl_net_ofi_rdma_ep_t *ep = (nccl_net_ofi_rdma_ep_t *)s_comm->base.base.ep;
-	nccl_ofi_msgbuff_result_t mb_res = nccl_ofi_msgbuff_insert(s_comm->msgbuff, msg_seq_num,
-		rx_buff_req, NCCL_OFI_MSGBUFF_BUFF, &stat);
-
-	if (mb_res == NCCL_OFI_MSGBUFF_SUCCESS) {
-		/* Inserted! In this case sender has not yet called send() for this message, so
-		   return success and initiate RDMA write when sender calls send(). */
-		return decrease_rx_buff_cnt(ep, get_rx_buff_data(rx_buff_req)->rail);
-	}
-
-	if (OFI_UNLIKELY(mb_res != NCCL_OFI_MSGBUFF_INVALID_IDX || stat != NCCL_OFI_MSGBUFF_INPROGRESS)) {
-		NCCL_OFI_WARN("Unexpected message insert result (%d) (ctrl recv)", (int)mb_res);
-		return -EINVAL;
-	}
-
-	// Already a req entry here
-	void *elem;
-	nccl_ofi_msgbuff_elemtype_t type;
-	mb_res = nccl_ofi_msgbuff_retrieve(s_comm->msgbuff, msg_seq_num, &elem, &type, &stat);
-	if (OFI_UNLIKELY(mb_res != NCCL_OFI_MSGBUFF_SUCCESS || type != NCCL_OFI_MSGBUFF_REQ)) {
-		NCCL_OFI_WARN("Invalid message retrieval result for msg %hu", msg_seq_num);
-		return -EINVAL;
-	}
-
-	nccl_net_ofi_rdma_req_t *req = (nccl_net_ofi_rdma_req_t *)elem;
-	assert(req->msg_seq_num == msg_seq_num);
-	rdma_req_send_data_t *send_data = get_send_data(req);
-	rdma_req_rx_buff_data_t *rx_buff_data = get_rx_buff_data(rx_buff_req);
-	nccl_net_ofi_rdma_ctrl_msg_t *ctrl_msg = get_rx_ctrl_msg(rx_buff_data);
-
-	if (!send_data->eager) {
-		ret = update_send_data_from_remote(s_comm, rx_buff_req, req);
-		if (OFI_UNLIKELY(ret != 0)) {
-			NCCL_OFI_WARN("Failed to copy ctrl data");
-			return ret;
-		}
-
-		/* Initiate rdma write */
-		ret = send_progress(req);
-		if (ret == -FI_EAGAIN) {
-			/* Add to pending reqs queue */
-			nccl_net_ofi_mutex_lock(&ep->pending_reqs_lock);
-			ep->pending_reqs_queue->push_back(req);
-			nccl_net_ofi_mutex_unlock(&ep->pending_reqs_lock);
-			ret = 0;
-			NCCL_OFI_TRACE_PENDING_INSERT(req);
-		}
-		else if (OFI_UNLIKELY(ret != 0)) {
-			return ret;
-		}
-	} else {
-		/* If recv buffer is smaller than send buffer, we reduce the size of the send req, even if we have
-		   have already eagerly sent the whole send buffer. The receive side will discard the extra data. */
-		send_data->remote_len = ctrl_msg->buff_len;
-		nccl_net_ofi_mutex_lock(&req->req_lock);
-		if (send_data->remote_len < send_data->buff_len) {
-			NCCL_OFI_TRACE(NCCL_NET,
-				       "Remote recv buffer (%zu) smaller than send buffer (%zu) in eager send",
-				       send_data->remote_len, send_data->buff_len);
-			req->size = send_data->remote_len;
-			send_data->buff_len = send_data->remote_len;
-		}
-		nccl_net_ofi_mutex_unlock(&req->req_lock);
-
-		/* In the eager case, increment completion count for send req */
-		ret = inc_req_completion(req, 0, send_data->total_num_compls);
-		if (ret != 0) {
-			NCCL_OFI_WARN("Failed to increase completion count");
-			return ret;
-		}
-	}
-
-	/* Attempt to re-post rx buffer */
-	ret = repost_rx_buff(ep, rx_buff_req);
-	if (ret != 0) {
-		NCCL_OFI_WARN("Failed to repost rx buff");
-		return ret;
-	}
-
-	return 0;
 }
 
 static inline int free_eager_copy_req(nccl_net_ofi_rdma_req_t *req, bool dec_inflight_reqs)
@@ -1236,7 +1141,6 @@ static inline int handle_rx_buff_recv(nccl_net_ofi_rdma_device_t *device, uint16
 	rdma_req_rx_buff_data_t *rx_buff_data = NULL;
 	nccl_ofi_rdma_connection_info_t *conn_msg = NULL;
 	nccl_ofi_rdma_connection_info_t *conn_resp_msg = NULL;
-	nccl_net_ofi_rdma_ctrl_msg_t *ctrl_msg = NULL;
 	nccl_net_ofi_rdma_listen_comm_t *l_comm = NULL;
 	nccl_net_ofi_rdma_send_comm_t *s_comm = NULL;
 	nccl_net_ofi_rdma_recv_comm_t *r_comm = NULL;
@@ -1329,29 +1233,7 @@ static inline int handle_rx_buff_recv(nccl_net_ofi_rdma_device_t *device, uint16
 		/* fall through to NCCL_OFI_RDMA_MSG_CTRL case */
 	case NCCL_OFI_RDMA_MSG_CTRL:
 		/* CTRL receive completion */
-		assert(cq_entry->len == nccl_net_ofi_rdma_ctrl_msg_size(ep->num_rails, ep->use_long_rkeys));
-
-		ctrl_msg = get_rx_ctrl_msg(rx_buff_data);
-		s_comm = rdma_device_get_send_comm(device, ctrl_msg->remote_comm_id);
-		if (OFI_UNLIKELY(s_comm == nullptr)) {
-			/* We already destroyed this s_comm. */
-			NCCL_OFI_WARN("Received ctrl message for non-existent send comm id %u",
-				      ctrl_msg->remote_comm_id);
-			ret = -EINVAL;
-			goto exit;
-		}
-
-		NCCL_OFI_TRACE_SEND_CTRL_RECV(s_comm->base.base.dev_id, rail_id, s_comm, ctrl_msg->msg_seq_num);
-
-		ret = handle_ctrl_recv(s_comm, ctrl_msg->msg_seq_num, rx_buff_req);
-		if (OFI_UNLIKELY(ret != 0)) {
-			goto exit;
-		}
-
-		nccl_net_ofi_mutex_lock(&s_comm->ctrl_recv_lock);
-		s_comm->n_ctrl_received += 1;
-		nccl_net_ofi_mutex_unlock(&s_comm->ctrl_recv_lock);
-
+		NCCL_OFI_WARN("Received ctrl message unexpected");
 		break;
 	case NCCL_OFI_RDMA_MSG_CLOSE:
 		assert(cq_entry->len == sizeof(nccl_net_ofi_rdma_close_msg_t));
@@ -1609,7 +1491,7 @@ static inline int rdma_req_handle_cq_entry(nccl_net_ofi_context_t *ctx,
 		} else if (req->type == NCCL_OFI_RDMA_SEND_CLOSE) {
 			ret = inc_req_completion(req, sizeof(nccl_net_ofi_rdma_close_msg_t), 1);
 		} else {
-			NCCL_OFI_WARN("Send completion from unexpected request type");
+			NCCL_OFI_WARN("Send completion from unexpected request type %d", req->type);
 			ret = -EINVAL;
 		}
 	} else if (comp_flags & FI_RECV) {
@@ -2748,6 +2630,25 @@ static int test(nccl_net_ofi_req_t *base_req, int *done, int *size)
 		ret = ofi_process_cq(ep);
 		if (OFI_UNLIKELY(ret != 0))
 			goto exit;
+
+		rdma_req_send_data_t *send_data = get_send_data(req);
+		if (send_data->eager && req->type == NCCL_OFI_RDMA_SEND) {
+                    nccl_net_ofi_rdma_send_comm_t* s_comm = (nccl_net_ofi_rdma_send_comm_t *)base_comm;
+                    uint16_t slot = req->msg_seq_num % NCCL_OFI_MAX_REQUESTS;
+		    bool has_ctrl = (s_comm->ctrl_fifo[slot].id == ((uint64_t)(req->msg_seq_num + 1) & MSG_SEQ_NUM_MASK));
+
+                    if (has_ctrl && req->ncompls > 0) {
+                        ret = inc_req_completion(req, 0, send_data->total_num_compls);
+		        if (ret != 0) {
+                            NCCL_OFI_WARN("Failed to increase completion count");
+                            return ret;
+		        }
+
+                        nccl_net_ofi_mutex_lock(&s_comm->ctrl_recv_lock);
+                        s_comm->n_ctrl_received += 1;
+		        nccl_net_ofi_mutex_unlock(&s_comm->ctrl_recv_lock);
+                    }
+	    }
 	}
 
 	/* Determine whether the request has finished without error and free if done */
@@ -2765,18 +2666,9 @@ static int test(nccl_net_ofi_req_t *base_req, int *done, int *size)
 		/* Mark as done */
 		*done = 1;
 
-		if (req->type == NCCL_OFI_RDMA_SEND || req->type == NCCL_OFI_RDMA_RECV) {
+		if (req->type == NCCL_OFI_RDMA_RECV) {
 			/* Mark as complete in message buffer */
-			nccl_ofi_msgbuff_t *msgbuff;
-			if (req->type == NCCL_OFI_RDMA_SEND) {
-				msgbuff = ((nccl_net_ofi_rdma_send_comm_t *)base_comm)->msgbuff;
-			} else if (req->type ==  NCCL_OFI_RDMA_RECV) {
-				msgbuff = ((nccl_net_ofi_rdma_recv_comm_t *)base_comm)->msgbuff;
-			} else {
-				NCCL_OFI_WARN("Unexpected request type: %d", req->type);
-				ret = -EINVAL;
-				goto exit;
-			}
+			nccl_ofi_msgbuff_t *msgbuff = ((nccl_net_ofi_rdma_recv_comm_t *)base_comm)->msgbuff;
 
 			nccl_ofi_msgbuff_status_t stat;
 			nccl_ofi_msgbuff_result_t mb_res = nccl_ofi_msgbuff_complete(msgbuff, req->msg_seq_num, &stat);
@@ -3324,12 +3216,13 @@ static inline int insert_send_ctrl_req(
 	uint16_t slot = r_comm->next_msg_seq_num % NCCL_OFI_MAX_REQUESTS;
 
 	r_comm->remote_fifo.ctrl_fifo[slot].id = (r_comm->next_msg_seq_num + 1) & MSG_SEQ_NUM_MASK;
-    r_comm->remote_fifo.ctrl_fifo[slot].addr = (uint64_t)buff;
-    r_comm->remote_fifo.ctrl_fifo[slot].size = size;
+        r_comm->remote_fifo.ctrl_fifo[slot].addr = (uint64_t)buff;
+        r_comm->remote_fifo.ctrl_fifo[slot].size = size;
+	r_comm->remote_fifo.ctrl_fifo[slot].recv_completion = recv_completion_optional;
 	uint16_t rail_id = 0;
-    for (; rail_id < r_comm->num_rails; rail_id++) {
-		uint64_t rkey = fi_mr_key(buff_mr_handle->mr[rail_id]);
-		r_comm->remote_fifo.ctrl_fifo[slot].mr_key[rail_id] = rkey;
+        for (; rail_id < r_comm->num_rails; rail_id++) {
+	     uint64_t rkey = fi_mr_key(buff_mr_handle->mr[rail_id]);
+             r_comm->remote_fifo.ctrl_fifo[slot].mr_key[rail_id] = rkey;
 	}
 	
 	send_ctrl_data->ctrl_fifo_id = slot;
@@ -3651,9 +3544,9 @@ static int recv(nccl_net_ofi_recv_comm_t *recv_comm, int n, void **buffers,
 	NCCL_OFI_TRACE_RECV(dev_id, r_comm, sizes[0], req, base_req);
 
 	/* Send ctrl msg */
-	//nccl_net_ofi_mutex_lock(&r_comm->ctrl_counter_lock);
-	//r_comm->n_ctrl_sent += 1;
-	//nccl_net_ofi_mutex_unlock(&r_comm->ctrl_counter_lock);
+	nccl_net_ofi_mutex_lock(&r_comm->ctrl_counter_lock);
+	r_comm->n_ctrl_sent += 1;
+	nccl_net_ofi_mutex_unlock(&r_comm->ctrl_counter_lock);
 	ret = receive_progress(recv_data->send_ctrl_req, true);
 	if (OFI_UNLIKELY(ret != 0)) {
 		/* TODO: Remove req from message buffer */
@@ -4044,12 +3937,6 @@ static int send_comm_destroy(nccl_net_ofi_rdma_send_comm_t *s_comm)
 	ret = nccl_ofi_freelist_fini(s_comm->nccl_ofi_reqs_fl);
 	if (ret != 0) {
 		NCCL_OFI_WARN("Call to nccl_ofi_freelist_fini failed: %d", ret);
-		return ret;
-	}
-
-	if (!nccl_ofi_msgbuff_destroy(s_comm->msgbuff)) {
-		NCCL_OFI_WARN("Failed to destroy msgbuff (s_comm)");
-		ret = -EINVAL;
 		return ret;
 	}
 
@@ -5405,49 +5292,6 @@ static int alloc_rdma_send_req(nccl_net_ofi_rdma_send_comm_t *s_comm,
 	return 0;
 }
 
-static int insert_rdma_send_req_into_msgbuff(nccl_net_ofi_rdma_send_comm_t *s_comm,
-						      int dev_id, bool have_ctrl,
-						      nccl_net_ofi_rdma_req_t **ret_req)
-{
-	nccl_net_ofi_rdma_req_t *req = *ret_req;
-	nccl_ofi_msgbuff_status_t msg_stat;
-	nccl_ofi_msgbuff_result_t mb_res;
-
-	if (have_ctrl) {
-		/*
-		 * There is already a buffer entry in the message buffer,
-		 * so replace it with a request.
-		 */
-		mb_res = nccl_ofi_msgbuff_replace(s_comm->msgbuff,
-						  req->msg_seq_num, req,
-						  NCCL_OFI_MSGBUFF_REQ,
-						  &msg_stat);
-		if (OFI_UNLIKELY(mb_res != NCCL_OFI_MSGBUFF_SUCCESS)) {
-			NCCL_OFI_WARN("Unexpected result of nccl_ofi_msgbuff_replace for msg %hu",
-				      req->msg_seq_num);
-			return -EINVAL;
-		}
-	} else {
-		/* Try inserting the new request */
-		mb_res = nccl_ofi_msgbuff_insert(s_comm->msgbuff,
-						 req->msg_seq_num, req,
-						 NCCL_OFI_MSGBUFF_REQ,
-						 &msg_stat);
-		if (OFI_UNLIKELY((mb_res == NCCL_OFI_MSGBUFF_INVALID_IDX) &&
-				 (msg_stat == NCCL_OFI_MSGBUFF_INPROGRESS))) {
-			/* Unlikely: a ctrl message was received on another
-			   thread. Return NULL and let NCCL call send again. */
-			req->free(req, false);
-			*ret_req = NULL;
-		} else if (OFI_UNLIKELY(mb_res != NCCL_OFI_MSGBUFF_SUCCESS)) {
-			NCCL_OFI_WARN("Unexpected result of nccl_ofi_msgbuff_insert for msg %hu",
-				      req->msg_seq_num);
-			return -EINVAL;
-		}
-	}
-	return 0;
-}
-
 static int post_rma_write(nccl_net_ofi_rdma_req_t *req)
 {
 	nccl_net_ofi_rdma_send_comm_t *s_comm = (nccl_net_ofi_rdma_send_comm_t *)req->comm;
@@ -5920,7 +5764,6 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, size_t size, in
 	uint16_t msg_seq_num = s_comm->next_msg_seq_num;
 	bool have_ctrl = false;
 	bool eager = false;
-	int dev_id = 0;
 	uint16_t slot = 0;
 
 	assert(s_comm != NULL);
@@ -5938,8 +5781,6 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, size_t size, in
 			      NCCL_OFI_MAX_SEND_REQUESTS);
 		goto error;
 	}
-
-	dev_id = s_comm->base.base.dev_id;
 
 	ep = (nccl_net_ofi_rdma_ep_t *)s_comm->base.base.ep;
 	assert(ep != NULL);
@@ -5965,17 +5806,6 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, size_t size, in
 
 	have_ctrl = false;
 
-	msg_seq_num = s_comm->next_msg_seq_num;
-	slot = msg_seq_num % NCCL_OFI_MAX_REQUESTS;
-
-	if (s_comm->ctrl_fifo[slot].id != ((uint64_t)(msg_seq_num + 1) & MSG_SEQ_NUM_MASK)) {
-        *base_req = NULL;
-        ret = 0;
-        goto error;
-    } 
-    
-	have_ctrl = true;
-
 	/* NCCL versions prior to 2.24 require special handling for 0 byte
 	 * messages when using user buffer registration.  NCCL passes the base
 	 * pointer from the user buffer, but passes the registration from the
@@ -5996,8 +5826,24 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, size_t size, in
 	/* Determine if this should be sent eagerly. */
 	eager = false;
 	if (!have_ctrl && (ssize_t)size <= ep->eager_send_size && s_comm->num_inflight_writes == 0) {
-		eager = true;
+            eager = true;
 	}
+
+	msg_seq_num = s_comm->next_msg_seq_num;
+	slot = msg_seq_num % NCCL_OFI_MAX_REQUESTS;
+
+	if (!eager) {
+	    if (s_comm->ctrl_fifo[slot].id != ((uint64_t)(msg_seq_num + 1) & MSG_SEQ_NUM_MASK)) {
+                *base_req = NULL;
+                ret = 0;
+                goto error;
+            } else {
+	        have_ctrl = true;
+                nccl_net_ofi_mutex_lock(&s_comm->ctrl_recv_lock);
+                s_comm->n_ctrl_received += 1;
+                nccl_net_ofi_mutex_unlock(&s_comm->ctrl_recv_lock);
+            }
+        }
 
 	ret = alloc_rdma_send_req(s_comm, msg_seq_num, data,
 				  size, mr_handle, eager, &req);
@@ -6005,7 +5851,7 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, size_t size, in
 		goto error;
 	}
 
-	if (have_ctrl) {
+	if (have_ctrl && !eager) {
 		/*
 		 * For already received RDMA control message, populate
 		 * the RDMA write metadata from the rx buffer
@@ -6016,11 +5862,6 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, size_t size, in
 			goto error;
 		}
 
-	}
-
-	ret = insert_rdma_send_req_into_msgbuff(s_comm, dev_id, false, &req);
-	if (OFI_UNLIKELY(ret != 0 || req == NULL)) {
-		goto free_req;
 	}
 
 	/*
@@ -6060,7 +5901,6 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, size_t size, in
 
 	goto exit;
 
- free_req:
  error:
 	if (req)
 		req->free(req, false);
@@ -6642,14 +6482,6 @@ static inline int create_send_comm(nccl_net_ofi_conn_handle_t *handle,
 
 	prepare_send_connect_message(ep, dev_id, ret_s_comm->local_comm_id, ret_s_comm->remote_comm_id, ret_s_comm->ctrl_fifo, ret_s_comm->ctrl_fifo_mr_handle,
 				     (nccl_ofi_rdma_connection_info_t *)ret_s_comm->conn_msg->ptr);
-
-	/* Allocate message buffer */
-	ret_s_comm->msgbuff = nccl_ofi_msgbuff_init(NCCL_OFI_RDMA_MSGBUFF_SIZE, NCCL_OFI_RDMA_SEQ_BITS);
-	if (!ret_s_comm->msgbuff) {
-		NCCL_OFI_WARN("Failed to allocate and initialize message buffer");
-		ret = -ENOMEM;
-		goto error;
-	}
 
 #if HAVE_NVTX_TRACING && NCCL_OFI_NVTX_TRACE_PER_COMM
 	for (int i = 0; i < NCCL_OFI_N_NVTX_DOMAIN_PER_COMM; ++i)
