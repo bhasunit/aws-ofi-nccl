@@ -654,6 +654,7 @@ static inline int inc_req_completion(nccl_net_ofi_rdma_req_t *req,
 	req->size += size;
 	ncompls = ++(req->ncompls);
 
+
 	/* Set state to completed if all completions arrived but avoid
 	 * overriding the state in case of previs errors */
 	if (ncompls == total_ncompls &&
@@ -1419,13 +1420,14 @@ static inline int rdma_req_handle_cq_entry(nccl_net_ofi_context_t *ctx,
 static inline int rdma_process_completions(struct fi_cq_data_entry *cq_entry,
 					   uint64_t num_cqes,
 					   nccl_net_ofi_rdma_device_t *device,
-					   uint16_t rail_id)
+					   uint16_t rail_id, nccl_net_ofi_rdma_domain_t *domain)
 {
 	int ret = 0;
 
 	for (uint64_t comp_idx = 0; comp_idx < num_cqes; comp_idx++) {
 		void *op_ctx = cq_entry[comp_idx].op_context;
 
+		domain->cq_count->insert(1);
 		if (cq_entry[comp_idx].flags & FI_REMOTE_WRITE) {
 
 			ret = handle_write_comp(&cq_entry[comp_idx], device, rail_id);
@@ -1446,7 +1448,6 @@ static inline int rdma_process_completions(struct fi_cq_data_entry *cq_entry,
 		nccl_net_ofi_context_t *ctx = container_of(op_ctx,
 							   nccl_net_ofi_context_t,
 							   ofi_ctx);
-
 		ret = ctx->handle_cq_entry(ctx, reinterpret_cast<struct fi_cq_entry *>(&cq_entry[comp_idx]),
 					   rail_id);
 		if (ret != 0) {
@@ -1694,7 +1695,7 @@ static inline int rdma_process_error_entry(struct fi_cq_err_entry *err_entry, st
 }
 
 
-static int ofi_process_cq_rail(nccl_net_ofi_rdma_device_t *device, nccl_net_ofi_rdma_domain_rail_t *rail)
+static int ofi_process_cq_rail(nccl_net_ofi_rdma_device_t *device, nccl_net_ofi_rdma_domain_rail_t *rail, nccl_net_ofi_rdma_domain_t *domain)
 {
 	struct fi_cq_data_entry cqe_buffers[cq_read_count];
 	ssize_t rc = 0;
@@ -1704,7 +1705,7 @@ static int ofi_process_cq_rail(nccl_net_ofi_rdma_device_t *device, nccl_net_ofi_
 		/* Receive completions for the given endpoint */
 		rc = fi_cq_read(rail->cq, cqe_buffers, cq_read_count);
 		if (rc > 0) {
-			ret = rdma_process_completions(cqe_buffers, rc, device, rail->rail_id);
+			ret = rdma_process_completions(cqe_buffers, rc, device, rail->rail_id, domain);
 			if (OFI_UNLIKELY(ret != 0))
 				goto exit;
 		} else if (OFI_UNLIKELY(rc == -FI_EAVAIL)) {
@@ -1759,7 +1760,7 @@ int nccl_net_ofi_rdma_ep_t::ofi_process_cq()
 	for (uint16_t rail_id = 0; rail_id != domain_ptr->num_rails; ++rail_id) {
 		nccl_net_ofi_rdma_domain_rail_t *rail = rdma_domain_get_rail(domain_ptr, rail_id);
 
-		ret = ofi_process_cq_rail(device, rail);
+		ret = ofi_process_cq_rail(device, rail, domain_ptr);
 		if (ret != 0) {
 			goto exit;
 		}
@@ -2940,7 +2941,7 @@ static inline int allocate_rdma_recv_req(
 
 	recv_data = get_recv_data(req);
 	/* In the case of early completion, only expect the completion for control msg itself */
-	recv_data->total_num_compls = recv_completion_optional ? 1 : 2;
+	recv_data->total_num_compls = recv_completion_optional ? 1 : 1;
 	recv_data->eager_copy_req = NULL;
 	recv_data->dst_buff = buff;
 	recv_data->dst_len = size;
@@ -6170,7 +6171,7 @@ int nccl_net_ofi_rdma_ep_t::ep_rail_init(int dev_id, uint16_t rail_id,
 					 nccl_net_ofi_rdma_device_rail_t *dev_rail,
 					 nccl_net_ofi_rdma_domain_rail_t *domain_rail,
 					 nccl_net_ofi_ep_rail_t *ep_rail,
-					 uint32_t tclass)
+					 uint32_t tclass, bool control)
 {
 	int ret = 0;
 	struct fi_info *rail_info = dev_rail->info;
@@ -6185,11 +6186,20 @@ int nccl_net_ofi_rdma_ep_t::ep_rail_init(int dev_id, uint16_t rail_id,
 		rail_info->tx_attr->tclass = tclass;
 	}
 
-	ret = nccl_ofi_ofiutils_init_connection(rail_info,
+	if (control) {
+		ret = nccl_ofi_ofiutils_init_connection(rail_info,
+						domain_rail->domain,
+						&ep_rail->ofi_ep,
+						&ep_rail->av,
+						domain_rail->ctrl_cq);
+	} else {
+		ret = nccl_ofi_ofiutils_init_connection(rail_info,
 						domain_rail->domain,
 						&ep_rail->ofi_ep,
 						&ep_rail->av,
 						domain_rail->cq);
+	}
+
 	if (tclass != FI_TC_UNSPEC) {
 		fi_freeinfo(rail_info);
 	}
@@ -6227,7 +6237,7 @@ int nccl_net_ofi_rdma_ep_t::init_rail_ofi_resources(nccl_net_ofi_rdma_device_t *
 		rail = rdma_endpoint_get_rail(rail_id);
 
 		ret = nccl_net_ofi_rdma_ep_t::ep_rail_init(dev_id, rail_id, rail_dev, 
-							   domain_rail, rail, FI_TC_UNSPEC);
+							   domain_rail, rail, FI_TC_UNSPEC, false);
 		if (ret != 0) {
 			NCCL_OFI_WARN("Initializing rail %d failed", rail_id);
 			goto exit;
@@ -6242,7 +6252,7 @@ int nccl_net_ofi_rdma_ep_t::init_rail_ofi_resources(nccl_net_ofi_rdma_device_t *
 		control_rail = rdma_endpoint_get_control_rail(rail_id);
 
 		ret = nccl_net_ofi_rdma_ep_t::ep_rail_init(dev_id, rail_id, rail_dev,
-							   domain_rail, control_rail, tc);
+							   domain_rail, control_rail, tc, true);
 		if (ret != 0) {
 			NCCL_OFI_WARN("Initializing control rail %d failed", rail_id);
 			goto exit;
@@ -6487,6 +6497,8 @@ nccl_net_ofi_rdma_domain_free(nccl_net_ofi_domain_t *base_domain)
 	int ret;
 	nccl_net_ofi_rdma_domain_t *domain = (nccl_net_ofi_rdma_domain_t *)base_domain;
 
+	domain->cq_count->print_stats();
+
 	if (domain->cm) {
 		delete domain->cm;
 		domain->cm = nullptr;
@@ -6617,6 +6629,14 @@ static nccl_net_ofi_domain_t *nccl_net_ofi_rdma_device_create_domain(nccl_net_of
 			goto error;
 		}
 		assert(domain_rail->cq != NULL);
+
+		ret = fi_cq_open(domain_rail->domain, &cq_attr, &domain_rail->ctrl_cq, NULL);
+		if (OFI_UNLIKELY(ret != 0)) {
+			NCCL_OFI_WARN("Couldn't open CQ. RC: %d, ERROR: %s",
+				      ret, fi_strerror(-ret));
+			goto error;
+		}
+		assert(domain_rail->ctrl_cq != NULL);
 	}
 
 	/*
@@ -6638,6 +6658,15 @@ static nccl_net_ofi_domain_t *nccl_net_ofi_rdma_device_create_domain(nccl_net_of
 	domain->cm = new nccl_ofi_connection_manager
 		(domain->base, sizeof(nccl_ofi_rdma_connection_info_t));
 
+	static std::vector<size_t> cq_bins = {0, 128}; 
+	domain->cq_count= new histogram<size_t, histogram_custom_binner<size_t> >("cq_count() Duration", histogram_custom_binner<size_t>(cq_bins));
+	if (domain->cq_count == NULL) {
+
+		ret = -ENOMEM;
+
+		goto error;
+
+	}
 error:
 	if (ret != 0) {
 		nccl_net_ofi_rdma_domain_free(&domain->base);

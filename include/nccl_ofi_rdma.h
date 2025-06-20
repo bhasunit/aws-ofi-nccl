@@ -19,6 +19,7 @@
 #include "nccl_ofi_msgbuff.h"
 #include "nccl_ofi_scheduler.h"
 #include "nccl_ofi_topo.h"
+#include "stats/histogram.h"
 #if HAVE_NVTX_TRACING
 #include <nvtx3/nvToolsExt.h>
 #endif
@@ -616,6 +617,7 @@ typedef struct nccl_net_ofi_rdma_domain_rail {
 	struct fid_domain *domain;
 
 	struct fid_cq *cq;
+	struct fid_cq *ctrl_cq;
 } nccl_net_ofi_rdma_domain_rail_t;
 
 
@@ -636,6 +638,8 @@ typedef struct nccl_net_ofi_rdma_domain {
 
 	/* Associated connection manager */
 	nccl_ofi_connection_manager *cm;
+
+	histogram<size_t, histogram_custom_binner<size_t> > *cq_count;
 } nccl_net_ofi_rdma_domain_t;
 
 
@@ -949,7 +953,7 @@ private:
 				nccl_net_ofi_rdma_device_rail_t *dev_rail,
 				nccl_net_ofi_rdma_domain_rail_t *domain_rail,
 				nccl_net_ofi_ep_rail_t *ep_rail,
-				uint32_t tclass);
+				uint32_t tclass, bool control);
 
 	static void ep_rail_release(nccl_net_ofi_ep_rail_t *rail, int dev_id);
 

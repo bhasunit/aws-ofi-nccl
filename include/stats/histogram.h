@@ -53,8 +53,8 @@ public:
 	void print_stats(void) {
 		auto range_labels = binner.get_bin_ranges();
 
-		NCCL_OFI_INFO(NCCL_NET, "histogram %s", description.c_str());
-		NCCL_OFI_INFO(NCCL_NET, "  min: %ld, max: %ld, num_samples: %lu",
+		NCCL_OFI_WARN("histogram %s", description.c_str());
+		NCCL_OFI_WARN( "  min: %ld, max: %ld, num_samples: %lu",
 					(long int)min_val, (long int)max_val, num_samples);
 		for (size_t i = 0 ; i < bins.size() ; ++i) {
 			std::stringstream ss;
@@ -65,7 +65,7 @@ public:
 				ss << "    ";
 			}
 			ss  << "    " << bins[i];
-			NCCL_OFI_INFO(NCCL_NET, "%s", ss.str().c_str());
+			NCCL_OFI_WARN( "%s", ss.str().c_str());
 		}
 	}
 
