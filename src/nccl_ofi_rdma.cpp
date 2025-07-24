@@ -5379,6 +5379,7 @@ static int send(nccl_net_ofi_send_comm_t *send_comm, void *data, size_t size, in
 	/* Check if the control message for the next message is present */
 	if (!have_ctrl) {
 		if (!eager) {
+			NCCL_OFI_TRACE_SEND_NO_BUFF(s_comm->base.base.dev_id, size, s_comm, 0, 0, base_req);
 			*base_req = NULL;
 			ret = 0;
 			goto error;
