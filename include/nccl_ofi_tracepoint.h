@@ -28,6 +28,10 @@
 } while(0)
 
 /***** RDMA PROTOCL *****/
+#define NCCL_OFI_TRACE_SEND_NO_BUFF(dev, size, comm, msg_seq_num, request, nccl_req) do { \
+	lttng_ust_tracepoint(nccl_ofi_plugin, SendNoBuff, dev, size, comm, \
+			     rdma_send_comm_get_rail(comm, 0)->remote_addr, nccl_req); \
+} while(0)
 
 #define NCCL_OFI_TRACE_SEND(dev, size, comm, msg_seq_num, request, nccl_req) do { \
 	lttng_ust_tracepoint(nccl_ofi_plugin, Send, dev, size, comm, msg_seq_num, request, nccl_req); \
