@@ -33,6 +33,11 @@ static_assert(MAX_NUM_RAILS <= UINT16_MAX);
 #define NCCL_OFI_RDMA_CTRL_TYPE_BITS (4)
 
 /*
+ * @brief Sentinel flush buffer value stored in gpu memory
+ */
+#define NCCL_OFI_RDMA_FLUSH_BUFFER_SENTINEL (0x1)
+
+/*
  * @brief      Number of bits used for the communicator ID
  */
 #define NCCL_OFI_RDMA_COMM_ID_BITS (18)
@@ -362,10 +367,8 @@ typedef struct {
  * @brief	Data of request responsible for flush operatoin
  */
 typedef struct {
-	/* Buffer to read flush data from */
-	void *data;
-	/* MR handles for the data buffer */
-	nccl_net_ofi_rdma_mr_handle_t *mr_handle;
+	/* Pointer to allocated buffer from freelist */
+	nccl_ofi_freelist_elem_t *flush_fl_elem;
 	/* Total number of completions. Expect completions from all NIC rail */
 	int total_num_compls;
 } rdma_req_flush_data_t;
@@ -553,7 +556,7 @@ typedef struct nccl_net_ofi_rdma_recv_comm_rail {
 
 /* Metadata about dummy flush buffer */
 typedef struct nccl_net_ofi_rdma_flush_buffer {
-	void *host_buffer;
+	void *buffer;
 	size_t size;
 	/* Memory registration handle of the local buffer */
 	nccl_net_ofi_rdma_mr_handle_t *mr_handle;
@@ -589,6 +592,9 @@ typedef struct nccl_net_ofi_rdma_recv_comm {
 
 	/* Free list to track control buffers, for sending RDMA control messages */
 	nccl_ofi_freelist_t *ctrl_buff_fl;
+
+	/* Free list to track host flush buffers, for sending flush messages */
+	nccl_ofi_freelist_t *flush_buff_fl;
 
 #if HAVE_NVTX_TRACING
 	nvtxDomainHandle_t nvtx_domain[NCCL_OFI_N_NVTX_DOMAIN_PER_COMM];
@@ -751,6 +757,10 @@ public:
 			    size_t size, int type,
 			    nccl_net_ofi_rdma_mr_handle_t **mhandle);
 
+	int reg_internal_mr_dma_buf(void *data,
+				int fd, uint64_t offset, size_t size, int type,
+				nccl_net_ofi_rdma_mr_handle_t **mhandle);
+
 	/**
 	 * @brief	Deregister memory region
 	 *
@@ -766,7 +776,7 @@ public:
 	std::vector<nccl_net_ofi_rdma_domain_rail_t> domain_rails;
 
 	/* The flush buffer */
-	nccl_net_ofi_rdma_flush_buffer_t flush_buff;
+	nccl_net_ofi_rdma_flush_buffer_t gpu_flush_buff;
 
 	/* List of endpoints and set of addresses they have connections to */
 	nccl_ofi_ep_addr_list_t ep_addr_list;
@@ -819,6 +829,27 @@ protected:
 	 * 		error, on others
 	 */			    
 	int dealloc_and_dereg_flush_buff();
+
+	/**
+	 * @brief	Allocated and registers buffer to flush RDMA operations. On
+	 * 		Success, receive communicator holds reference to flush buffer
+	 * 		and associated memory handle.
+	 *
+	 * @param	dev_id
+	 *		Device ID
+	 *
+	 * @return	0, on success
+	 * 		error, on others
+	 */
+	int alloc_and_reg_gpu_flush_buff(int dev_id);
+
+	/**
+	 * @brief	Deregister flush buffer if flush buffer was registered. Deallocate flush buffer.
+	 *
+	 * @return	0, on success
+	 * 		error, on others
+	 */
+	int dealloc_and_dereg_gpu_flush_buff();
 };
 
 
