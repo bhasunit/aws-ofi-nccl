@@ -367,6 +367,10 @@ typedef struct {
  * @brief	Data of request responsible for flush operatoin
  */
 typedef struct {
+	/* Buffer to read flush data from */
+	void *data;
+	/* MR handles for the data buffer */
+	nccl_net_ofi_rdma_mr_handle_t *mr_handle;
 	/* Pointer to allocated buffer from freelist */
 	nccl_ofi_freelist_elem_t *flush_fl_elem;
 	/* Total number of completions. Expect completions from all NIC rail */
@@ -757,10 +761,11 @@ public:
 			    size_t size, int type,
 			    nccl_net_ofi_rdma_mr_handle_t **mhandle);
 
+#if HAVE_DECL_FI_MR_DMABUF
 	int reg_internal_mr_dma_buf(void *data,
 				int fd, uint64_t offset, size_t size, int type,
 				nccl_net_ofi_rdma_mr_handle_t **mhandle);
-
+#endif
 	/**
 	 * @brief	Deregister memory region
 	 *
@@ -776,7 +781,7 @@ public:
 	std::vector<nccl_net_ofi_rdma_domain_rail_t> domain_rails;
 
 	/* The flush buffer */
-	nccl_net_ofi_rdma_flush_buffer_t gpu_flush_buff;
+	nccl_net_ofi_rdma_flush_buffer_t flush_buff;
 
 	/* List of endpoints and set of addresses they have connections to */
 	nccl_ofi_ep_addr_list_t ep_addr_list;
@@ -829,27 +834,6 @@ protected:
 	 * 		error, on others
 	 */			    
 	int dealloc_and_dereg_flush_buff();
-
-	/**
-	 * @brief	Allocated and registers buffer to flush RDMA operations. On
-	 * 		Success, receive communicator holds reference to flush buffer
-	 * 		and associated memory handle.
-	 *
-	 * @param	dev_id
-	 *		Device ID
-	 *
-	 * @return	0, on success
-	 * 		error, on others
-	 */
-	int alloc_and_reg_gpu_flush_buff(int dev_id);
-
-	/**
-	 * @brief	Deregister flush buffer if flush buffer was registered. Deallocate flush buffer.
-	 *
-	 * @return	0, on success
-	 * 		error, on others
-	 */
-	int dealloc_and_dereg_gpu_flush_buff();
 };
 
 
