@@ -351,6 +351,26 @@ OFI_NCCL_PARAM(bool, early_completion, "EARLY_COMPLETION", true);
  */
 OFI_NCCL_PARAM(bool, disable_close_message, "DISABLE_CLOSE_MESSAGE", true);
 
+OFI_NCCL_PARAM(int, min_chunk_tree_ll, "MIN_CHUNK_TREE_LL", 0);
+OFI_NCCL_PARAM(int, min_chunk_tree_ll128, "MIN_CHUNK_TREE_LL128", 0);
+OFI_NCCL_PARAM(int, min_chunk_tree_simple, "MIN_CHUNK_TREE_SIMPLE", 0);
+
+OFI_NCCL_PARAM(int, min_chunk_ring_ll, "MIN_CHUNK_RING_LL", 0);
+OFI_NCCL_PARAM(int, min_chunk_ring_ll128, "MIN_CHUNK_RING_LL128", 0);
+OFI_NCCL_PARAM(int, min_chunk_ring_simple, "MIN_CHUNK_RING_SIMPLE", 0);
+
+OFI_NCCL_PARAM(int, min_chunk_nvls_ll, "MIN_CHUNK_NVLS_LL", 0);
+OFI_NCCL_PARAM(int, min_chunk_nvls_ll128, "MIN_CHUNK_NVLS_LL128", 0);
+OFI_NCCL_PARAM(int, min_chunk_nvls_simple, "MIN_CHUNK_NVLS_SIMPLE", 0);
+
+OFI_NCCL_PARAM(int, min_chunk_nvls_tree_ll, "MIN_CHUNK_NVLS_TREE_LL", 0);
+OFI_NCCL_PARAM(int, min_chunk_nvls_tree_ll128, "MIN_CHUNK_NVLS_TREE_LL128", 0);
+OFI_NCCL_PARAM(int, min_chunk_nvls_tree_simple, "MIN_CHUNK_NVLS_TREE_SIMPLE", 0);
+
+OFI_NCCL_PARAM(int, min_chunk_pat_simple, "MIN_CHUNK_PAT_SIMPLE", 0);
+
+
+
 /*
  * Decides whether or not we should skip nics that do not have accelerators
  * at the same PCI level.

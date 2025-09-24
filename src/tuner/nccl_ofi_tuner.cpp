@@ -188,6 +188,7 @@ static ncclResult_t nccl_ofi_tuner_init_v2(size_t nRanks, size_t nNodes, ncclDeb
 }
 
 
+
 static ncclResult_t nccl_ofi_tuner_get_coll_info(void *context,
 						 ncclFunc_t collType,
 						 size_t nBytes,
@@ -209,6 +210,74 @@ static ncclResult_t nccl_ofi_tuner_get_coll_info(void *context,
 
 	return ret;
 }
+
+static const char* ofincclAlgoToString(int algo) {
+  switch (algo) {
+  case NCCL_ALGO_TREE: return "TREE";
+  case NCCL_ALGO_RING: return "RING";
+  case NCCL_ALGO_COLLNET_DIRECT: return "COLLNET_DIRECT";
+  case NCCL_ALGO_COLLNET_CHAIN: return "COLLNET_CHAIN";
+  case NCCL_ALGO_NVLS: return "NVLS";
+  case NCCL_ALGO_NVLS_TREE: return "NVLS_TREE";
+  case NCCL_ALGO_PAT: return "PAT";
+  default: return "Unknown";
+  }
+}
+
+static const char* ofincclProtoToString(int proto) {
+  switch (proto) {
+  case NCCL_PROTO_LL: return "LL";
+  case NCCL_PROTO_LL128: return "LL128";
+  case NCCL_PROTO_SIMPLE: return "SIMPLE";
+  default: return "Unknown";
+  }
+}
+
+static ncclResult_t nccl_ofi_tuner_init_v6(void** context, uint64_t commId, size_t nRanks, size_t nNodes, ncclDebugLogger_t logFunction,
+                      ncclNvlDomainInfo_v5_t* nvlDomainInfo, ncclTunerConstants_v6_t* constants)
+{
+        int minChunkSize [NCCL_NUM_ALGORITHMS_V5][NCCL_NUM_PROTOCOLS_V5] = {
+                { ofi_nccl_min_chunk_tree_ll(), ofi_nccl_min_chunk_tree_ll128(), ofi_nccl_min_chunk_tree_simple()}, //Tree
+                { ofi_nccl_min_chunk_ring_ll(), ofi_nccl_min_chunk_ring_ll128(), ofi_nccl_min_chunk_ring_simple()},  // Ring
+                { 0, 0, 0}, { 0, 0, 0},  // Collnet Direct, Chain
+                { ofi_nccl_min_chunk_nvls_ll(), ofi_nccl_min_chunk_nvls_ll128(), ofi_nccl_min_chunk_nvls_simple()}, // NVLS
+                { ofi_nccl_min_chunk_nvls_tree_ll(), ofi_nccl_min_chunk_nvls_tree_ll128(), ofi_nccl_min_chunk_nvls_tree_simple()},  // NVLS Tree
+                { 0, 0, ofi_nccl_min_chunk_pat_simple()}  // PAT
+        };
+
+        memcpy(constants->minChunkSize, minChunkSize, sizeof(constants->minChunkSize));
+
+        ncclResult_t ret =  nccl_ofi_tuner_init(nRanks, nNodes, logFunction, context);
+
+        for (int algo = 0; algo < NCCL_NUM_ALGORITHMS_V5; algo++) {
+                for (int proto = 0; proto < NCCL_NUM_PROTOCOLS_V5; proto++) {
+                        if (minChunkSize[algo][proto]) {
+                                NCCL_OFI_WARN(" MIN CHUNKSIZE: ALGO %s PROTO %s CHUNKSIZE %d", ofincclAlgoToString(algo),
+                                         ofincclProtoToString(proto), minChunkSize[algo][proto]);
+                        }
+                }
+        }
+
+        return ret;
+}
+
+static ncclResult_t nccl_ofi_tuner_get_coll_info_v6(void *context,
+						 ncclFunc_t collType,
+						 size_t nBytes,
+						 int numPipeOps,
+						 float **collCostTable,
+						 int numAlgo,
+						 int numProto,
+                                                 int regBuff,
+						 int *nChannels)
+{
+        return nccl_ofi_tuner_get_coll_info(context, collType, nBytes, numPipeOps, collCostTable, numAlgo, numProto, nChannels);
+}
+
+extern "C" const ncclTuner_v6_t ncclTunerPlugin_v6 = {.name = "nccl_ofi_tuner",
+					   .init = nccl_ofi_tuner_init_v6,
+					   .getCollInfo = nccl_ofi_tuner_get_coll_info_v6,
+					   .finalize = nccl_ofi_tuner_destroy};
 
 extern "C" const ncclTuner_v3_t ncclTunerPlugin_v3 = {.name = "nccl_ofi_tuner",
 					   .init = nccl_ofi_tuner_init,
