@@ -320,6 +320,8 @@ private:
 
 	int do_gin_signal(const nccl_net_ofi_gin_signal_metadata_msg_t &metadata);
 
+        int iput_signal_deliver_signal(nccl_net_ofi_gin_iputsignal_recv_req *req, uint64_t peer_rank);
+
 	int iput_signal_recv_req_completion(unsigned int peer_rank, uint64_t map_key,
 					    nccl_net_ofi_gin_iputsignal_recv_req *req);
 

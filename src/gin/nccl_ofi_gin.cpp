@@ -609,6 +609,31 @@ int nccl_ofi_gin_comm::iput_signal_recv_req_completion(unsigned int peer_rank, u
 	return ret;
 }
 
+int nccl_ofi_gin_comm::iput_signal_deliver_signal(nccl_net_ofi_gin_iputsignal_recv_req *req, uint64_t peer_rank)
+{
+        int ret=0;
+        if (req->num_seg_completions == req->total_segments) {
+	       
+		if (req->metadata_received) {
+		        ret = do_gin_signal(req->metadata);
+		        if (ret != 0) {
+			        return ret;
+		        }
+	        } else {
+		/* No signal associated with this op (true for iput) */
+	        }
+
+	        /* Write ack */
+	        ret = writedata_ack(*this, peer_rank, req->metadata.msg_seq_num);
+	        if (ret != 0) {
+	        	return ret;
+	        }
+
+		this->resources.return_req_to_pool(req);
+        }
+
+        return ret;
+}
 int nccl_ofi_gin_comm::iput_signal_deliver_all(uint64_t peer_rank)
 {
 	int ret = 0;
@@ -668,7 +693,7 @@ int nccl_ofi_gin_comm::handle_signal_metadata_completion(
 		req->metadata_received = true;
 		outstanding_iput_signal_recv_reqs[map_key] = req;
 
-		ret = iput_signal_deliver_all(peer_rank);
+		ret = iput_signal_deliver_signal(req, peer_rank);
 
 	} else {
 		auto *req = it->second;
@@ -677,7 +702,7 @@ int nccl_ofi_gin_comm::handle_signal_metadata_completion(
 
 		req->metadata_received = true;
 		req->num_seg_completions += 1;
-		ret = iput_signal_deliver_all(peer_rank);
+		ret = iput_signal_deliver_signal(req, peer_rank);
 	}
 
 	return ret;
@@ -718,7 +743,7 @@ int nccl_ofi_gin_comm::handle_signal_write_completion(fi_addr_t src_addr, uint16
 			req->metadata.num_segments = req->total_segments;
 		}
 
-		ret = iput_signal_deliver_all(peer_rank);
+		ret = iput_signal_deliver_signal(req, peer_rank);
 
 	} else {
 		auto *req = it->second;
@@ -726,7 +751,7 @@ int nccl_ofi_gin_comm::handle_signal_write_completion(fi_addr_t src_addr, uint16
 		assert(req->total_segments == total_segms);
 
 		req->num_seg_completions += 1;
-		ret = iput_signal_deliver_all(peer_rank);
+		ret = iput_signal_deliver_signal(req, peer_rank);
 	}
 
 	return ret;
