@@ -173,6 +173,28 @@ jobs:
       - name: Call `make distcheck`
         run: make distcheck V=1
 
+      - name: Configure with --enable-debug
+        run: |
+          make distclean || true
+          ./autogen.sh
+          if [ "${{ matrix.sdk }}" = "neuron" ]
+          then
+            ./configure --with-mpi=/opt/amazon/openmpi \
+                        --with-libfabric=/opt/amazon/efa \
+                        --enable-tests=yes \
+                        --enable-neuron \
+                        --enable-debug
+          else
+            ./configure --with-mpi=/opt/amazon/openmpi \
+                        --with-libfabric=/opt/amazon/efa \
+                        --enable-tests=yes \
+                        --enable-debug \
+                        --with-cuda=/usr/local/cuda/
+          fi
+
+      - name: Call `make check` with debug
+        run: make check V=1 || (cat tests/unit/test-suite.log && exit 1)
+
       - name: Upload config.log
         if: failure()
         uses: actions/upload-artifact@v4
