@@ -47,7 +47,6 @@ public:
 
 	int deregister_region(RegHandle *handle) override;
 
-private:
 	/**
 	 * Represents a GDRCopy registered memory region
 	 */
@@ -73,6 +72,7 @@ private:
 		size_t gdr_reglen;
 	};
 
+private:
 	/* GDRCopy library handles */
 	struct impl;
 #if HAVE_GDRCOPY

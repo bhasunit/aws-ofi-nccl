@@ -233,6 +233,15 @@ public:
 		       nccl_net_ofi_gin_iputsignal_req_t **request);
 
 	/**
+	 * iresetSignal API. Resets a signal shadow value to zero (synchronous).
+	 *
+	 * @param signalOff: offset in signal memory registration
+	 *
+	 * @return: 0 on success, non-zero on failure
+	 */
+	int iresetSignal(void* signalBase, uint64_t signalOff);
+
+	/**
 	 * Callback for metadata completion.
 	 *
 	 * @param src_addr: source address of the signal
@@ -291,6 +300,17 @@ private:
 	   TODO: we could also just pass this in the handle to avoid a map
 	   lookup. Not sure yet if that is the right thing to do. */
 	std::unordered_map<void *, gin_sym_mr_handle *> mr_handle_map;
+
+	/* Shadow copy of signal values per communicator. Used to track signal
+	   state without requiring RDMA reads. Indexed by signal ID. */
+	/* Hash function for signal key pair */
+	struct SignalKeyHash {
+		std::size_t operator()(const std::pair<void*, uint64_t>& p) const {
+			return std::hash<void*>()(p.first) ^ (std::hash<uint64_t>()(p.second) << 1);
+		}
+	};
+	
+	std::unordered_map<std::pair<void*, uint64_t>, uint64_t, SignalKeyHash> signal_shadow;
 
 	/* Number of outstanding RDMA writes for signal delivery acknowledgement
 	   Used to wait for remaining acknowledgements on communicator close. */

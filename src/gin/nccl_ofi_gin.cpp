@@ -549,6 +549,22 @@ int nccl_ofi_gin_comm::iputSignal(uint64_t srcOff, gin_sym_mr_handle *srcMhandle
 	return 0;
 }
 
+int nccl_ofi_gin_comm::iresetSignal(void* signalBase, uint64_t signalOff)
+{
+	gin_sym_mr_handle* mr_handle = static_cast<gin_sym_mr_handle*>(signalBase);
+
+	void* shadow_base = signalBase;
+	if (mr_handle->type == NCCL_PTR_CUDA && mr_handle->gdr_handle != nullptr) {
+		auto* gdr_handle = static_cast<nccl_ofi_gdrcopy_ctx::gdrcopy_RegHandle*>(mr_handle->gdr_handle);
+		shadow_base = gdr_handle->mapped_ptr;
+	}
+
+	auto signal_key = std::make_pair(shadow_base, signalOff);
+	signal_shadow[signal_key] = 0;
+
+	return 0;
+}
+
 static inline uint32_t get_peer_rank(fi_addr_t src_addr,
 				     std::unordered_map<fi_addr_t, uint32_t> &rank_map)
 {
@@ -568,11 +584,8 @@ static inline uint64_t get_req_map_key(uint32_t peer_rank, uint16_t msg_seq_num)
 int nccl_ofi_gin_comm::do_gin_signal(const nccl_net_ofi_gin_signal_metadata_msg_t &metadata)
 {
 	void *signal_base = reinterpret_cast<void *>(metadata.signal_base_address);
+	uint64_t signal_offset = metadata.signal_offset;
 
-	/* Value to increment the signal. For increment ops, this will be 1 */
-	uint64_t add_value = metadata.signal_value;
-
-	/* Look up the MR handle associated with this signal */
 	auto it = this->mr_handle_map.find(signal_base);
 	if (OFI_UNLIKELY(it == this->mr_handle_map.end())) {
 		NCCL_OFI_WARN("Signal base address %p not found in MR handle map", signal_base);
@@ -580,22 +593,23 @@ int nccl_ofi_gin_comm::do_gin_signal(const nccl_net_ofi_gin_signal_metadata_msg_
 	}
 	gin_sym_mr_handle *mr_handle = it->second;
 
+	uint64_t add_value = metadata.signal_value;
+
 	if (mr_handle->type == NCCL_PTR_CUDA) {
-		uint64_t old_value;
-
-		int ret = get_device_copy().copy_from_device(*mr_handle->gdr_handle,
-							     metadata.signal_offset, &old_value,
-							     sizeof(old_value));
-		if (OFI_UNLIKELY(ret != 0)) {
-			NCCL_OFI_WARN("Failed to read current signal value");
-			return -ret;
+		void *shadow_base = signal_base;
+		if (mr_handle->gdr_handle != nullptr) {
+			auto* gdr_handle = static_cast<nccl_ofi_gdrcopy_ctx::gdrcopy_RegHandle*>(mr_handle->gdr_handle);
+			shadow_base = gdr_handle->mapped_ptr;
 		}
+		auto signal_key = std::make_pair(shadow_base, signal_offset);
 
-		/* We only support addition */
-		uint64_t new_value = old_value + add_value;
+		uint64_t shadow_value = signal_shadow[signal_key];
+		uint64_t new_value = shadow_value + add_value;
+
+		signal_shadow[signal_key] = new_value;
 
 		/* Write using GDRcopy. */
-		ret = get_device_copy().copy_to_device(&new_value, *mr_handle->gdr_handle,
+		int ret = get_device_copy().copy_to_device(&new_value, *mr_handle->gdr_handle,
 						       metadata.signal_offset, sizeof(new_value));
 		if (OFI_UNLIKELY(ret != 0)) {
 			NCCL_OFI_WARN("Failed to update signal value");

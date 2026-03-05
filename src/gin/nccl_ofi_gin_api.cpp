@@ -296,6 +296,18 @@ static ncclResult_t nccl_ofi_gin_iput(void *collComm, uint64_t srcOff, void *src
 				       0, nullptr, 0, 0, request);
 }
 
+static ncclResult_t nccl_ofi_gin_iresetSignal(void *collComm, void* signalBase, uint64_t signalOff)
+{
+	auto *gin_comm = static_cast<nccl_ofi_gin_comm *>(collComm);
+
+	int ret = gin_comm->iresetSignal(signalBase, signalOff);
+	if (ret != 0) {
+		return nccl_net_ofi_retval_translate(ret);
+	}
+
+	return ncclSuccess;
+}
+
 static ncclResult_t nccl_ofi_gin_finalize(void *ctx)
 {
 	/* Clean up the GIN context structure.
@@ -335,6 +347,7 @@ NCCL_OFI_EXPORT_SYMBOL ncclGin_v11_t ncclGinPlugin_v11 = {
 	.closeListen = nccl_ofi_gin_closeListen,
 	.iput = nccl_ofi_gin_iput,
 	.iputSignal = nccl_ofi_gin_iputSignal,
+	.iresetSignal = nccl_ofi_gin_iresetSignal,
 	.test = nccl_ofi_gin_test,
 	.ginProgress = nccl_ofi_gin_ginProgress,
 	/* Not used by NCCL in proxy mode */

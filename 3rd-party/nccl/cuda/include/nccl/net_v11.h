@@ -226,6 +226,9 @@ typedef struct {
       uint32_t rank, uint64_t signalOff, void *signalMhandle,
       uint64_t signalValue, uint32_t signalOp, void** request);
 
+  // Reset signal operation - resets a remote signal to zero (synchronous)
+  ncclResult_t (*iresetSignal)(void* collComm, void* signalBase, uint64_t signalOff);
+
   // Test whether a request is complete.
   ncclResult_t (*test)(void* collComm, void* request, int* done);
 
