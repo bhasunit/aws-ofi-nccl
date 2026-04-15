@@ -116,6 +116,15 @@ struct nccl_ofi_gin_peer_rank_info {
 	size_t consecutive_puts_without_ack = 0;
 
 	nccl_ofi_gin_pending_ack_info pending_ack;
+
+	/* Per-peer flush counters.
+	   submitted: incremented when a write/metadata is posted (once per iputSignal)
+	              and when an ack is sent to this peer.
+	   completed: incremented when the remote ack is received (for ack-requested ops),
+	              when local sub-ops finish (for non-ack-requested ops),
+	              and when a sent ack's CQ fires. */
+	uint64_t flush_submitted = 0;
+	uint64_t flush_completed = 0;
 };
 
 /**
@@ -225,7 +234,10 @@ public:
 	{
 		uint16_t seq = (ack_seq_num - ack_count + 1) & GIN_IMM_SEQ_MASK;
 		while (true) {
-			clear_ack_outstanding(peer_rank, seq);
+			if (query_ack_outstanding(peer_rank, seq)) {
+				clear_ack_outstanding(peer_rank, seq);
+				rank_comms[peer_rank].flush_completed++;
+			}
 			if (seq == ack_seq_num) break;
 			seq = (seq + 1) & GIN_IMM_SEQ_MASK;
 		}
@@ -237,6 +249,14 @@ public:
 
 	/* Flush bundled acks that were not sent with metadata. Called from progress. */
 	int flush_stale_acks();
+
+	/* Non-blocking flush check for a peer. Sets flushed=1 if all operations are complete. */
+	int flush_peer(uint32_t peer_rank, int *flushed);
+
+	void flush_completed_for_peer(uint32_t peer_rank)
+	{
+		rank_comms[peer_rank].flush_completed++;
+	}
 
 	/**
 	 * iputSignal API. Transfers some user data (determined by memory registrations

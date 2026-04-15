@@ -214,6 +214,13 @@ public:
 	nvtxRangeId_t trace_id;
 #endif
 
+	uint32_t get_peer_rank() const { return peer_rank; }
+	bool get_is_ack_requested() const { return is_ack_requested; }
+
+	/* Number of sub-ops (writes + metadata) expected and completed */
+	uint16_t num_expected = 0;
+	uint16_t num_completed = 0;
+
 private:
 	/* Associated Comm object */
 	nccl_ofi_rdma_gin_put_comm &gin_comm;
@@ -285,6 +292,7 @@ public:
 	int dev;
 	uint32_t rank;
 	uint16_t msg_seq_num;
+	nccl_ofi_rdma_gin_iputsignal_req *parent = nullptr;
 
 	nccl_net_ofi_gin_write_req_t(struct fid_ep *ep_arg, void *src_arg, size_t size_arg,
 				     void *desc_arg, uint64_t imm_data_arg,
@@ -299,13 +307,8 @@ public:
 
 	int post() override;
 
-	int handle_cq_entry(struct fi_cq_entry * /*cq_entry_base*/, fi_addr_t /*src_addr*/,
-			    uint16_t rail_id) override
-	{
-		NCCL_OFI_TRACE_GIN_WRITE_END(dev, rail_id, comm, rank, msg_seq_num, this);
-		done = true;
-		return 0;
-	}
+	int handle_cq_entry(struct fi_cq_entry *cq_entry_base, fi_addr_t src_addr,
+			    uint16_t rail_id) override;
 
 	int test(int *done_out) override
 	{
@@ -339,6 +342,7 @@ public:
 	int dev;
 	uint32_t rank;
 	uint16_t msg_seq_num;
+	nccl_ofi_rdma_gin_iputsignal_req *parent = nullptr;
 
 	nccl_net_ofi_gin_metadata_send_req_t(struct fid_ep *ep_arg, uint16_t rail_id_arg,
 					     nccl_ofi_freelist::fl_entry *metadata_elem_arg,
@@ -354,14 +358,8 @@ public:
 
 	int post() override;
 
-	int handle_cq_entry(struct fi_cq_entry * /*cq_entry_base*/, fi_addr_t /*src_addr*/,
-			    uint16_t rail_id_arg) override
-	{
-		NCCL_OFI_TRACE_GIN_METADATA_SEND_END(dev, rail_id_arg, comm, rank, msg_seq_num,
-						     this);
-		done = true;
-		return 0;
-	}
+	int handle_cq_entry(struct fi_cq_entry *cq_entry_base, fi_addr_t src_addr,
+			    uint16_t rail_id_arg) override;
 
 	int test(int *done_out) override
 	{

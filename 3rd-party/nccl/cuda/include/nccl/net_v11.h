@@ -229,6 +229,9 @@ typedef struct {
   // Test whether a request is complete.
   ncclResult_t (*test)(void* collComm, void* request, int* done);
 
+  // Flush all outstanding operations to a peer. Returns flushed=1 when done.
+  ncclResult_t (*ginFlush)(void* collComm, uint32_t peerRank, int* flushed);
+
   // Progress function. Will be called if non-NULL in GIN_PROXY mode, or if devHandle.needsProxyProgress=1.
   ncclResult_t (*ginProgress)(void* collComm);
 

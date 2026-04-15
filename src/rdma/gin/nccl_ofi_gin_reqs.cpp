@@ -194,6 +194,44 @@ nccl_net_ofi_gin_sendack_req_t::~nccl_net_ofi_gin_sendack_req_t()
 	ack_fl->entry_free(ack_elem);
 }
 
+static void try_complete_parent(nccl_ofi_rdma_gin_iputsignal_req *parent, void *comm, uint32_t rank)
+{
+	if (!parent) return;
+	if (++parent->num_completed < parent->num_expected) return;
+
+	auto *gin_comm = static_cast<nccl_ofi_rdma_gin_put_comm *>(comm);
+
+	if (!parent->get_is_ack_requested())
+		gin_comm->flush_completed_for_peer(parent->get_peer_rank());
+
+	for (auto &wr : parent->write_reqs) {
+		if (wr) { gin_comm->get_resources().return_req_to_pool(wr); wr = nullptr; }
+	}
+	if (parent->send_req) {
+		gin_comm->get_resources().return_req_to_pool(parent->send_req);
+		parent->send_req = nullptr;
+	}
+	gin_comm->get_resources().return_req_to_pool(parent);
+}
+
+int nccl_net_ofi_gin_write_req_t::handle_cq_entry(struct fi_cq_entry * /*cq_entry_base*/,
+						   fi_addr_t /*src_addr*/, uint16_t rail_id)
+{
+	NCCL_OFI_TRACE_GIN_WRITE_END(dev, rail_id, comm, rank, msg_seq_num, this);
+	done = true;
+	try_complete_parent(parent, comm, rank);
+	return 0;
+}
+
+int nccl_net_ofi_gin_metadata_send_req_t::handle_cq_entry(struct fi_cq_entry * /*cq_entry_base*/,
+							   fi_addr_t /*src_addr*/, uint16_t rail_id_arg)
+{
+	NCCL_OFI_TRACE_GIN_METADATA_SEND_END(dev, rail_id_arg, comm, rank, msg_seq_num, this);
+	done = true;
+	try_complete_parent(parent, comm, rank);
+	return 0;
+}
+
 int nccl_ofi_rdma_gin_iputsignal_req::test(int *done)
 {
 	*done = 0;

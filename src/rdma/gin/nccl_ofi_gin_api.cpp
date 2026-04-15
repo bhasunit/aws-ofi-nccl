@@ -269,6 +269,13 @@ static ncclResult_t nccl_ofi_gin_test(void *collComm, void *request, int *done)
 	return nccl_net_ofi_retval_translate(ret);
 }
 
+static ncclResult_t nccl_ofi_gin_ginFlush(void *collComm, uint32_t peer_rank, int *flushed)
+{
+	auto *gin_comm = static_cast<nccl_ofi_rdma_gin_put_comm *>(collComm);
+	int ret = gin_comm->flush_peer(peer_rank, flushed);
+	return nccl_net_ofi_retval_translate(ret);
+}
+
 static ncclResult_t nccl_ofi_gin_iputSignal(void *collComm, uint64_t srcOff, void *srcMhandle,
 					    size_t size, uint64_t dstOff, void *dstMhandle,
 					    uint32_t rank, uint64_t signalOff, void *signalMhandle,
@@ -340,6 +347,7 @@ NCCL_OFI_EXPORT_SYMBOL ncclGin_v11_t ncclGinPlugin_v11 = {
 	.iput = nccl_ofi_gin_iput,
 	.iputSignal = nccl_ofi_gin_iputSignal,
 	.test = nccl_ofi_gin_test,
+	.ginFlush = nccl_ofi_gin_ginFlush,
 	.ginProgress = nccl_ofi_gin_ginProgress,
 	/* Not used by NCCL in proxy mode */
 	.queryLastError = nullptr,

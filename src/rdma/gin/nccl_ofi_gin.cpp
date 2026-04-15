@@ -585,8 +585,18 @@ int nccl_ofi_rdma_gin_put_comm::iputSignal(uint64_t srcOff, nccl_ofi_gin_symm_mr
 	/* Update umbrella request with send_req */
 	req->send_req = send_req;
 
+	/* Wire parent pointers and expected count for try_complete_parent */
+	uint16_t num_ops = 0;
+	for (auto &wr : req->write_reqs) {
+		if (wr) { wr->parent = req; num_ops++; }
+	}
+	if (send_req) { send_req->parent = req; num_ops++; }
+	req->num_expected = num_ops;
+
 	rank_comm.active_put_signal[msg_seq_num % NCCL_OFI_MAX_REQUESTS] = is_ack_requested;
 	rank_comm.next_target_seq_num = (rank_comm.next_target_seq_num + 1) & GIN_IMM_SEQ_MASK;
+
+	rank_comm.flush_submitted++;
 
 	*request = req;
 	return 0;
@@ -757,6 +767,13 @@ int nccl_ofi_rdma_gin_put_comm::flush_stale_acks()
 	return 0;
 }
 
+int nccl_ofi_rdma_gin_put_comm::flush_peer(uint32_t peer_rank, int *flushed)
+{
+	auto &rank_comm = rank_comms[peer_rank];
+	*flushed = (rank_comm.flush_submitted == rank_comm.flush_completed) ? 1 : 0;
+	return 0;
+}
+
 int nccl_ofi_rdma_gin_put_comm::iput_signal_deliver_all(uint32_t peer_rank)
 {
 	int ret = 0;
@@ -866,6 +883,7 @@ int nccl_ofi_rdma_gin_put_comm::handle_ack_completion(fi_addr_t src_addr, uint16
 	   in any order. A single ack_seq_num would require cumulative
 	   state that breaks under reordering. */
 	clear_ack_range(peer_rank, ack_seq_num, count);
+
 	return 0;
 }
 
