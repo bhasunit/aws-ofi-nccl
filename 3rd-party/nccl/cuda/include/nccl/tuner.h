@@ -88,7 +88,6 @@ typedef struct {
 
 typedef ncclTuner_v3_t ncclTuner_t;
 
-#include "tuner_v1.h"
 #include "tuner_v2.h"
 #include "tuner_v5.h"
 #include "tuner_v6.h"
