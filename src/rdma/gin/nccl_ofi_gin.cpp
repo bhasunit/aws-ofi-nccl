@@ -432,7 +432,7 @@ int nccl_ofi_rdma_gin_put_comm::iputSignal(uint64_t srcOff, nccl_ofi_gin_symm_mr
 				  uint64_t dstOff, nccl_ofi_gin_symm_mr_handle_t *dstMhandle, uint32_t dst_rank,
 				  uint64_t signalOff, nccl_ofi_gin_symm_mr_handle_t *signalMhandle,
 				  uint64_t signalValue, uint32_t signalOp,
-				  nccl_ofi_gin_req_t **request)
+				  nccl_ofi_gin_req_t **request, bool aggregate)
 {
 	auto *src_mr = static_cast<nccl_ofi_rdma_gin_symm_mr_handle *>(srcMhandle);
 	auto *dst_mr = static_cast<nccl_ofi_rdma_gin_symm_mr_handle *>(dstMhandle);
@@ -535,10 +535,10 @@ int nccl_ofi_rdma_gin_put_comm::iputSignal(uint64_t srcOff, nccl_ofi_gin_symm_mr
 			nccl_net_ofi_xfer_info_t *xfer_info = &xfers[rail_it];
 			void *desc = fi_mr_desc(src_mhandle->get_mr(xfer_info->rail_id));
 
-			/* Set FI_MORE on the first write when it shares a rail
-			 * with the subsequent metadata send */
+			/* Set FI_MORE when aggregate hint is set (more requests follow)
+			 * or on first write that shares a rail with metadata send */
 			uint64_t wr_flags = FI_REMOTE_CQ_DATA;
-			if (has_signal && rail_it == 0)
+			if ((has_signal && rail_it == 0) || aggregate)
 				wr_flags |= FI_MORE;
 
 			auto write_req = resources.get_req_from_pool<nccl_net_ofi_gin_write_req_t>(

@@ -417,10 +417,23 @@ static ncclResult_t nccl_ofi_gin_destroyContext_v13(void *ginCtx)
 
 static ncclResult_t nccl_ofi_gin_iput_v13(void *ginCtx, int context, uint64_t srcOff,
 					  void *srcMhandle, size_t size, uint64_t dstOff,
-					  void *dstMhandle, uint32_t rank, void **request)
+					  void *dstMhandle, uint32_t rank, uint32_t flags,
+					  void **request)
 {
-	return nccl_ofi_gin_iput(ginCtx, srcOff, srcMhandle, size,
-				 dstOff, dstMhandle, rank, request);
+	bool aggregate = !!(flags & 1);
+	auto *gin_comm = static_cast<nccl_ofi_rdma_gin_put_comm *>(ginCtx);
+	auto *src_mr_handle = static_cast<nccl_ofi_gin_symm_mr_handle_t *>(srcMhandle);
+	auto *dst_mr_handle = static_cast<nccl_ofi_gin_symm_mr_handle_t *>(dstMhandle);
+
+	nccl_ofi_gin_req_t *req = nullptr;
+	int ret = gin_comm->iputSignal(srcOff, src_mr_handle, size, dstOff, dst_mr_handle, rank,
+				       0, nullptr, 0, 0, &req, aggregate);
+	if (ret != 0) {
+		return nccl_net_ofi_retval_translate(ret);
+	}
+
+	*request = req;
+	return ncclSuccess;
 }
 
 static ncclResult_t nccl_ofi_gin_iputSignal_v13(void *ginCtx, int context, uint64_t srcOff,
